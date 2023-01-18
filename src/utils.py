@@ -262,3 +262,39 @@ def normalise(M):
     DI = sp.diags(di)    # D inverse i.e. D^{-1}
     
     return DI.dot(M)
+
+import pdb
+def get_color_coded_background(color, i):
+    return "\033[4{}m {:.4f} \033[0m".format(color+1, i)
+
+def print_a_colored_ndarray(map, d, row_sep=""):
+    map = np.round(map,3)
+    n,m = map.shape 
+    n = n // d
+    m = m // d
+    color_range_row = np.arange(m)[np.newaxis,...].repeat(d,axis=1)
+    color_range_col = np.arange(n)[...,np.newaxis].repeat(d,axis=0)
+    color_range = color_range_row + color_range_col
+
+    back_map_modified = np.vectorize(get_color_coded_background)(color_range, map)
+    n, m = back_map_modified.shape
+    fmt_str = "\n".join([row_sep.join(["{}"]*m)]*n)
+    print(fmt_str.format(*back_map_modified.ravel()))
+
+def batched_sym_matrix_pow(matrices: torch.Tensor, p: float) -> torch.Tensor:
+        r"""
+        Power of a matrix using Eigen Decomposition.
+        Args:
+            matrices: A batch of matrices.
+            p: Power.
+            positive_definite: If positive definite
+        Returns:
+            Power of each matrix in the batch.
+        """
+        # vals, vecs = torch.linalg.eigh(matrices)
+        # SVD is much faster than  vals, vecs = torch.linalg.eigh(matrices) for large batches.
+        vecs, vals, _ = torch.linalg.svd(matrices)
+        good = vals > vals.max(-1, True).values * vals.size(-1) * torch.finfo(vals.dtype).eps
+        vals = vals.pow(p).where(good, torch.zeros((), device=matrices.device, dtype=matrices.dtype))
+        matrix_power = (vecs * vals.unsqueeze(-2)) @ torch.transpose(vecs, -2, -1)
+        return matrix_power

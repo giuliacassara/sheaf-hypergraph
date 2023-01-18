@@ -22,9 +22,11 @@ from layers import *
 
 import math 
 
-from torch_scatter import scatter
+from torch_scatter import scatter, scatter_mean, scatter_add
 from torch_geometric.utils import softmax
+import pdb
 
+from orthogonal import Orthogonal
 #  This part is for HyperGCN
 
 class HyperGCN(nn.Module):
@@ -204,14 +206,442 @@ class HGNN(nn.Module):
         x = self.hgc2(x, G)
         return x
 
-class Sheafs(nn.Module):
+class DiagSheafs(nn.Module):
+    """
+        This is a Hypergraph Sheaf Model with 
+        the dxd blocks in H_BIG associated to each pair (node, hyperedge)
+        being **diagonal**
 
+
+    """
     def __init__(self, args):
-        super(Sheafs, self).__init__()
+        super(DiagSheafs, self).__init__()
+
+        self.num_layers = args.All_num_layers
+        self.dropout = args.dropout  # Note that default is 0.6
+        self.num_features = args.num_features
+        self.MLP_hidden = args.MLP_hidden 
+        self.d = args.heads # dimension of the stalks
+        self.init_hedge = args.init_hedge # how to initialise hyperedge attributes: avg or rand
+        self.norm_type = args.sheaf_normtype #type of laplacian normalisation degree_norm or block_norm
+        self.act = args.sheaf_act # type of nonlinearity used when predicting the dxd blocks
+        self.hyperedge_attr = None
+        self.sheaf_dropout = args.sheaf_dropout #dropout used/not-used in predicting the dxd blocks
+
+
+        if args.cuda in [0, 1]:
+            self.device = torch.device('cuda:'+str(args.cuda)
+                              if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = torch.device('cpu')
+
+        self.lin = Linear(self.num_features, self.num_features*self.d, bias=False)
+        self.sheaf_lin = Linear(2*self.num_features, self.d, bias=False)
+        
+#         Note that add dropout to attention is default in the original paper
+        self.convs = nn.ModuleList()
+        self.convs.append(HypergraphDiagSheafConv(self.num_features, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type))
+        
+        #iulia Qs: add back the multi-layers?
+        for _ in range(self.num_layers-1):
+           self.convs.append(HypergraphDiagSheafConv(self.MLP_hidden, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type))
+
+        self.lin2 = Linear(self.MLP_hidden*self.d, args.num_classes, bias=False)
+
+    def reset_parameters(self):
+        for conv in self.convs:
+            conv.reset_parameters()
+        self.lin.reset_parameters()
+        self.lin2.reset_parameters()
+        self.sheaf_lin.reset_parameters()
+
+    def predict_blocks(self, xs, es):
+        # select all pairs (node, hyperedge)
+        h_sheaf = torch.cat((xs,es), dim=-1) #sparse version of an NxEx2f tensor
+        h_sheaf = self.sheaf_lin(h_sheaf)  #sparse version of an NxExd tensor
+        if self.act == 'sigmoid':
+            h_sheaf = F.sigmoid(h_sheaf) # output d numbers for every entry in the incidence matrix
+        elif self.act == 'tanh':
+            h_sheaf = F.tanh(h_sheaf) # output d numbers for every entry in the incidence matrix
+        
+        if self.sheaf_dropout:
+            h_sheaf = F.dropout(h_sheaf, p=self.dropout, training=self.training)
+        return h_sheaf
+
+    #this is exclusively for diagonal sheaf
+    def build_sheaf_incidence(self, x, e, hyperedge_index):
+        """ tmp
+        x: N x f 
+        e: E x f 
+        -> (concat) N x E x 2F -> (linear project) N x E x d (the elements on the diagonal of each dxd block)
+        -> (reshape) (Nd x Ed) with NxE diagonal blocks of dimension dxd
+
+        """
+        row, col = hyperedge_index
+
+        x_row = torch.index_select(x, dim=0, index=row)
+        e_col = torch.index_select(e, dim=0, index=col)
+        h_sheaf = self.predict_blocks(x_row, e_col)
+        
+        self.h_sheaf = h_sheaf #this is stored in self for testing purpose
+
+        # from a d-dim tensor assoc to every entrence in edge_index
+        # create a sparse incidence Nd x Ed
+
+        # We need to modify indices from the NxE matrix 
+        # to correspond to the large Nd x Ed matrix, but restrict only on the element of the diagonal of each block
+        # indices: scalar [i,j] -> block dxd with indices [d*i, d*i+1.. d*i+d-1; d*j, d*j+1 .. d*j+d-1]
+        # attributes: reshape h_sheaf
+
+        d_range = torch.arange(self.d, device=self.device).view(1,-1,1).repeat(2,1,1) #2xdx1
+        hyperedge_index = hyperedge_index.unsqueeze(1) #2x1xK
+        hyperedge_index = self.d * hyperedge_index + d_range #2xdxK
+
+        hyperedge_index = hyperedge_index.permute(0,2,1).reshape(2,-1) #2x(d*K)
+
+        h_sheaf_index = hyperedge_index
+        h_sheaf_attributes = h_sheaf.reshape(-1) #(d*K)
+
+        #the resulting (index, values) pair correspond to the diagonal of each block sub-matrix
+        return h_sheaf_index, h_sheaf_attributes
+
+    def init_hyperedge_attr(self, type, num_edges=None, x=None, hyperedge_index=None):
+        #initialize hyperedge attributes either random or as the average of the nodes
+        if type == 'rand':
+            hyperedge_attr = torch.randn((num_edges, self.num_features)).to(self.device)
+        elif type == 'avg':
+            hyperedge_attr = scatter_mean(x[hyperedge_index[0]],hyperedge_index[1], dim=0)
+        else:
+            hyperedge_attr = None
+        return hyperedge_attr
 
     def forward(self, data):
 
         x = data.x
+        edge_index = data.edge_index
+        num_nodes = data.edge_index[0].max().item() + 1
+        num_edges = data.edge_index[1].max().item() + 1
+
+        # hyperedge_attr = torch.randn((num_edges, self.num_features)).to(self.device)
+
+        #if we are at the first epoch, initialise the attribute, otherwise use the previous ones
+        if self.hyperedge_attr is None:
+            self.hyperedge_attr = self.init_hyperedge_attr(self.init_hedge, num_edges=num_edges, x=x, hyperedge_index=edge_index)
+
+        #infer the sheaf as a sparse incidence matrix Nd x Ed, with each block being diagonal
+        h_sheaf_index, h_sheaf_attributes = self.build_sheaf_incidence(x, self.hyperedge_attr, edge_index)
+
+        # expand the input N x num_features -> Nd x num_features such that we can apply the propagation
+        x = self.lin(x)
+        x = x.view((x.shape[0]*self.d, self.num_features)) # (N * d) x num_features
+ 
+        for i, conv in enumerate(self.convs[:-1]):
+            x = F.elu(conv(x, hyperedge_index=h_sheaf_index, alpha=h_sheaf_attributes, num_nodes=num_nodes, num_edges=num_edges))
+            x = F.dropout(x, p=self.dropout, training=self.training)
+
+
+        x = self.convs[-1](x,  hyperedge_index=h_sheaf_index, alpha=h_sheaf_attributes, num_nodes=num_nodes, num_edges=num_edges)
+        x = x.view(num_nodes, -1) # Nd x out_channels -> Nx(d*out_channels)
+        x = self.lin2(x) # Nx(d*out_channels)-> N x num_classes
+
+        return x
+
+
+class OrthoSheafs(nn.Module):
+    """
+        This is a Hypergraph Sheaf Model with 
+        the dxd blocks in H associated to each pair (node, hyperedge)
+        being **othogonal**
+
+
+    """
+    def __init__(self, args):
+        super(OrthoSheafs, self).__init__()
+
+        self.num_layers = args.All_num_layers
+        self.dropout = args.dropout  # Note that default is 0.6
+        self.num_features = args.num_features
+        self.MLP_hidden = args.MLP_hidden 
+        self.d = args.heads # dimension of the stalks
+        self.init_hedge = args.init_hedge # how to initialise hyperedge attributes: avg or rand
+        self.norm_type = args.sheaf_normtype #type of laplacian normalisation degree_norm or block_norm
+        self.act = args.sheaf_act # type of nonlinearity used when predicting the dxd blocks
+        self.hyperedge_attr = None
+        self.sheaf_dropout = args.sheaf_dropout #dropout used/not-used in predicting the dxd blocks
+
+        if args.cuda in [0, 1]:
+            self.device = torch.device('cuda:'+str(args.cuda)
+                              if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = torch.device('cpu')
+
+        self.lin = Linear(args.num_features, args.num_features*self.d, bias=False)
+        self.orth_sheaf_lin = Linear(2*args.num_features, self.d*(self.d-1)//2, bias=False) #d(d-1)/2 params to transform in an ortho matrix
+        self.orth_transform = Orthogonal(d=self.d, orthogonal_map='householder') #method applied to transform params into ortho dxd matrix
+
+#       Note that add dropout to attention is default in the original paper
+        self.convs = nn.ModuleList()
+        self.convs.append(HypergraphOrthoSheafConv(args.num_features, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type))
+        
+        for _ in range(self.num_layers-1):
+           self.convs.append(HypergraphOrthoSheafConv(args.MLP_hidden, args.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type))
+
+        self.lin2 = Linear(self.MLP_hidden*self.d, args.num_classes, bias=False)
+
+    def reset_parameters(self):
+        for conv in self.convs:
+            conv.reset_parameters()
+        self.lin.reset_parameters()
+        self.lin2.reset_parameters()
+        self.orth_sheaf_lin.reset_parameters()
+
+    def predict_blocks(self, xs, es):
+        # select all pairs (node, hyperedge)
+        h_sheaf = torch.cat((xs,es), dim=-1)  #sparse version of a NxEx2f tensor
+        h_sheaf = self.orth_sheaf_lin(h_sheaf)  #output d(d-1)//2 numbers for every entry in the incidence matrix
+        
+        if self.act == 'sigmoid':
+            h_sheaf = F.sigmoid(h_sheaf)
+        elif self.act == 'tanh':
+            h_sheaf = F.tanh(h_sheaf)
+
+        #convert the d*(d-1)//2 params into orthonormal dxd matrices using housholder transformation
+        h_orth_sheaf = self.orth_transform(h_sheaf) #sparse version of a NxExdxd tensor
+        if self.sheaf_dropout:
+            h_orth_sheaf = F.dropout(h_orth_sheaf, p=self.dropout, training=self.training)
+        return h_orth_sheaf
+
+    def build_ortho_sheaf_incidence(self, x, e, hyperedge_index, debug=False):
+        """ 
+        x: N x d 
+        e: N x f 
+        -> (concat) N x E x 2d -> (linear project) N x E x (d*(d-1)//2)
+        ->(housholder transform) N x E x (d*(d-1)//2) -> N x E x d x d with each dxd block being an orthonormal matrix
+        -> (reshape) (Nd x Ed)
+
+        """
+        row, col = hyperedge_index
+        x_row = torch.index_select(x, dim=0, index=row)
+        e_col = torch.index_select(e, dim=0, index=col)
+        h_orth_sheaf = self.predict_blocks(x_row, e_col)
+        
+        # h_orth_sheaf = h_orth_sheaf * torch.eye(self.d, device=self.device)
+
+        # from a d-dim tensor assoc to every entrence in edge_inde
+        # create a sparse incidence Nd x Ed
+        # modify indices to correspond to the big matrix and assign the weights
+        # indices: [i,j] -> [d*i, d*i.. d*i+d-1, d*i+d-1; d*j, d*j+1 .. d*j, d*j+1,..d*j+d-1]
+
+        if (debug==True):
+            print("x", x.mean(-1))
+            print("x_row", x_row.mean(-1))
+            print("e", e.mean(-1))
+            print("e_col", e_col.mean(-1))
+            print(hyperedge_index)
+
+        d_range = torch.arange(self.d, device=self.device)
+        d_range_edges = d_range.repeat(self.d).view(-1,1) #0,1..d,0,1..d..   d*d elems
+        d_range_nodes = d_range.repeat_interleave(self.d).view(-1,1) #0,0..0,1,1..1..d,d..d  d*d elems
+        hyperedge_index = hyperedge_index.unsqueeze(1) 
+   
+
+        hyperedge_index_0 = self.d * hyperedge_index[0] + d_range_nodes
+        hyperedge_index_0 = hyperedge_index_0.permute((1,0)).reshape(1,-1)
+        hyperedge_index_1 = self.d * hyperedge_index[1] + d_range_edges
+        hyperedge_index_1 = hyperedge_index_1.permute((1,0)).reshape(1,-1)
+        h_orth_sheaf_index = torch.concat((hyperedge_index_0, hyperedge_index_1), 0)
+        #!!! Is this the correct reshape??? Please check!!
+        h_orth_sheaf_attributes = h_orth_sheaf.reshape(-1)
+        
+        #create the big matrix from the dxd orthogonal blocks  
+        return h_orth_sheaf_index, h_orth_sheaf_attributes
+
+    def init_hyperedge_attr(self, type, num_edges=None, x=None, hyperedge_index=None):
+        if type == 'rand':
+            hyperedge_attr = torch.randn((num_edges, self.num_features)).to(self.device)
+        elif type == 'avg':
+            hyperedge_attr = scatter_mean(x[hyperedge_index[0]],hyperedge_index[1], dim=0)
+        else:
+            hyperedge_attr = None
+        return hyperedge_attr
+
+    def forward(self, data):
+        x = data.x
+        edge_index = data.edge_index
+        num_nodes = data.edge_index[0].max().item() + 1
+        num_edges = data.edge_index[1].max().item() + 1
+
+        # hyperedge_attr = torch.randn((num_edges, self.num_features)).to(self.device)
+
+        #if we are at the first epoch, initialise the attribute, otherwise use the previous ones
+        if self.hyperedge_attr is None:
+            self.hyperedge_attr = self.init_hyperedge_attr(self.init_hedge, num_edges=num_edges, x=x, hyperedge_index=edge_index)
+
+        #infer the sheaf as a sparse incidence matrix Nd x Ed
+        h_orth_sheaf_index, h_orth_sheaf_attributes = self.build_ortho_sheaf_incidence(x, self.hyperedge_attr, edge_index)
+        #expand the input Nd x num_features
+        x = self.lin(x) #N x num_features -> N x (d*num_features)
+        x = x.view((x.shape[0]*self.d, self.num_features)) # (N * d) x num_features
+ 
+        for i, conv in enumerate(self.convs[:-1]):
+
+            x = F.elu(conv(x, hyperedge_index=h_orth_sheaf_index, alpha=h_orth_sheaf_attributes, num_nodes=num_nodes, num_edges=num_edges))
+            x = F.dropout(x, p=self.dropout, training=self.training)
+#         x = F.dropout(x, p=self.dropout, training=self.training)
+
+        x = self.convs[-1](x,  hyperedge_index=h_orth_sheaf_index, alpha=h_orth_sheaf_attributes, num_nodes=num_nodes, num_edges=num_edges)
+        x = x.view(num_nodes, -1) #Nd x out_channels -> Nx(d*out_channels)
+        x = self.lin2(x) #N x (d*out_channels) -> N x num_classes
+        return x
+
+
+
+
+class GeneralSheafs(nn.Module):
+    """
+        This is a Hypergraph Sheaf Model with 
+        the dxd blocks in H associated to each pair (node, hyperedge)
+        being **unconstrained**
+
+
+    """
+    def __init__(self, args):
+        super(GeneralSheafs, self).__init__()
+
+        self.num_layers = args.All_num_layers
+        self.dropout = args.dropout  # Note that default is 0.6
+        self.num_features = args.num_features
+        self.MLP_hidden = args.MLP_hidden 
+        self.d = args.heads # dimension of the stalks
+        self.init_hedge = args.init_hedge # how to initialise hyperedge attributes: avg or rand
+        self.norm_type = args.sheaf_normtype #type of laplacian normalisation degree_norm or block_norm
+        self.act = args.sheaf_act # type of nonlinearity used when predicting the dxd blocks
+        self.hyperedge_attr = None
+        self.sheaf_dropout = args.sheaf_dropout #dropout used/not-used in predicting the dxd blocks
+
+
+        if args.cuda in [0, 1]:
+            self.device = torch.device('cuda:'+str(args.cuda)
+                              if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = torch.device('cpu')
+
+        self.lin = Linear(args.num_features, args.num_features*self.d, bias=False)
+        self.general_sheaf_lin = Linear(2*args.num_features, self.d*self.d, bias=False) #d(d-1)/2 params to transform in an ortho matrix
+
+#         Note that add dropout to attention is default in the original paper
+        self.convs = nn.ModuleList()
+        self.convs.append(HypergraphGeneralSheafConv(args.num_features, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type))
+        #iulia Qs: add back the multi-layers?
+        for _ in range(self.num_layers-1):
+           self.convs.append(HypergraphGeneralSheafConv(args.MLP_hidden, args.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type))
+
+        self.lin2 = Linear(self.MLP_hidden*self.d, args.num_classes, bias=False)
+
+    def reset_parameters(self):
+        for conv in self.convs:
+            conv.reset_parameters()
+        self.lin.reset_parameters()
+        self.lin2.reset_parameters()
+        self.general_sheaf_lin.reset_parameters()
+
+    def predict_blocks(self, xs, es):
+        # select each pair (node, hedge)
+        h_sheaf = torch.cat((xs,es), dim=-1) 
+        h_sheaf = self.general_sheaf_lin(h_sheaf)  #output d*d numbers for every entry in the incidence matrix
+        if self.act == 'sigmoid':
+            h_sheaf = F.sigmoid(h_sheaf)
+        elif self.act == 'tanh':
+            h_sheaf = F.tanh(h_sheaf)
+        if self.sheaf_dropout:
+            h_sheaf = F.dropout(h_sheaf, p=self.dropout, training=self.training)
+        h_sheaf = h_sheaf.view(h_sheaf.shape[0], self.d, self.d) #dxd ortho matrix
+        return h_sheaf
+         
+    def build_general_sheaf_incidence(self, x, e, hyperedge_index, debug=False):
+        """ 
+        x: N x f
+        e: N x f 
+        -> (concat) N x E x 2f -> (linear project) N x E x d*d
+        -> (reshape) (Nd x Ed) with each block dxd being unconstrained
+
+        """
+        row, col = hyperedge_index
+        x_row = torch.index_select(x, dim=0, index=row)
+        e_col = torch.index_select(e, dim=0, index=col)
+
+        h_general_sheaf = self.predict_blocks(x_row, e_col)
+        #Iulia: Temporary debug
+        # h_general_sheaf = h_general_sheaf * torch.eye(self.d, device=self.device)
+        self.h_general_sheaf = h_general_sheaf #for debug purpose
+
+        if (debug==True):
+            print("x", x.mean(-1))
+            print("x_row", x_row.mean(-1))
+            print("e", e.mean(-1))
+            print("e_col", e_col.mean(-1))
+            print(hyperedge_index)
+
+        # from a d-dim tensor assoc to every entrence in edge_index
+        # create a sparse incidence Nd x Ed
+
+        # modify indices to correspond to the big matrix and assign the weights
+        # indices: [i,j] -> [d*i, d*i.. d*i+d-1, d*i+d-1; d*j, d*j+1 .. d*j, d*j+1,..d*j+d-1]
+        
+        d_range = torch.arange(self.d, device=self.device)
+        d_range_edges = d_range.repeat(self.d).view(-1,1) #0,1..d,0,1..d..   d*d elems
+        d_range_nodes = d_range.repeat_interleave(self.d).view(-1,1) #0,0..0,1,1..1..d,d..d  d*d elems
+        hyperedge_index = hyperedge_index.unsqueeze(1) 
+   
+
+        hyperedge_index_0 = self.d * hyperedge_index[0] + d_range_nodes
+        hyperedge_index_0 = hyperedge_index_0.permute((1,0)).reshape(1,-1)
+        hyperedge_index_1 = self.d * hyperedge_index[1] + d_range_edges
+        hyperedge_index_1 = hyperedge_index_1.permute((1,0)).reshape(1,-1)
+        h_general_sheaf_index = torch.concat((hyperedge_index_0, hyperedge_index_1), 0)
+
+        #!!! Is this the correct reshape??? Please check!!
+        h_general_sheaf_attributes = h_general_sheaf.reshape(-1)
+
+        #create the big matrix from the dxd blocks  
+        return h_general_sheaf_index, h_general_sheaf_attributes
+
+    def init_hyperedge_attr(self, type, num_edges=None, x=None, hyperedge_index=None):
+        #initialize hyperedge attributes either random or as the average of the nodes
+        if type == 'rand':
+            hyperedge_attr = torch.randn((num_edges, self.num_features)).to(self.device)
+        elif type == 'avg':
+            hyperedge_attr = scatter_mean(x[hyperedge_index[0]],hyperedge_index[1], dim=0)
+        else:
+            hyperedge_attr = None
+        return hyperedge_attr
+
+    def forward(self, data):
+        x = data.x
+        edge_index = data.edge_index
+        num_nodes = data.edge_index[0].max().item() + 1
+        num_edges = data.edge_index[1].max().item() + 1
+        #Iulia Qs: I don't think it's ok to generate random at each iteration
+        # hyperedge_attr = torch.randn((num_edges, self.num_features)).to(self.device)
+        
+        #if we are at the first epoch, initialise the attribute, otherwise use the previous ones
+        if self.hyperedge_attr is None:
+            self.hyperedge_attr = self.init_hyperedge_attr(self.init_hedge, num_edges=num_edges, x=x, hyperedge_index=edge_index)
+
+        #infer the sheaf as a sparse incidence matrix Nd x Ed
+        h_general_sheaf_index, h_general_sheaf_attributes = self.build_general_sheaf_incidence(x, self.hyperedge_attr, edge_index)
+
+        x = self.lin(x) #N x num_features -> N x (d*num_features)
+        x = x.view((x.shape[0]*self.d, self.num_features)) # N x (d*num_features) -> (N * d) x num_features 
+
+        for i, conv in enumerate(self.convs[:-1]):
+            x = F.elu(conv(x, hyperedge_index=h_general_sheaf_index, alpha=h_general_sheaf_attributes, num_nodes=num_nodes, num_edges=num_edges))
+            x = F.dropout(x, p=self.dropout, training=self.training)
+#         x = F.dropout(x, p=self.dropout, training=self.training)
+
+        x = self.convs[-1](x,  hyperedge_index=h_general_sheaf_index, alpha=h_general_sheaf_attributes, num_nodes=num_nodes, num_edges=num_edges)
+        x = x.view(num_nodes, -1) # Nd x out_channels -> N x (d*out_channels)
+        x = self.lin2(x) # N x (d*out_channels) -> N x num_channels
 
         return x
 
@@ -278,26 +708,41 @@ class HCHA(nn.Module):
         self.num_layers = args.All_num_layers
         self.dropout = args.dropout  # Note that default is 0.6
         self.symdegnorm = args.HCHA_symdegnorm
-        heads = 2
+        self.heads = args.heads
         self.num_features = args.num_features
-        args.MLP_hidden = args.MLP_hidden // heads
-
-        #self.hyperedge_attr = torch.randn((len(data.edge_index[1]), args.num_features))
+        self.MLP_hidden = args.MLP_hidden // self.heads
+        self.init_hedge = args.init_hedge
+        self.hyperedge_attr = None
 
 #         Note that add dropout to attention is default in the original paper
         self.convs = nn.ModuleList()
+        #iulia Gs: should change here heads=args.heads?
         self.convs.append(HypergraphConv(args.num_features,
-                                         args.num_features, use_attention=True, heads = 2))
-        #for _ in range(self.num_layers-2):
-        #    self.convs.append(HypergraphConv(
-        #        heads*args.MLP_hidden, args.MLP_hidden, use_attention=True, heads = 4))
+                                         self.MLP_hidden, use_attention=args.use_attention, heads = self.heads))
+        
+        #iulia Qs: add back the multi-layers?
+        for _ in range(self.num_layers-2):
+           self.convs.append(HypergraphConv(
+               self.heads*self.MLP_hidden, self.MLP_hidden, use_attention=args.use_attention, heads = self.heads))
         # Output heads is set to 1 as default
         self.convs.append(HypergraphConv(
-            heads*args.num_features, args.num_classes, use_attention=False))
+            self.heads*self.MLP_hidden, args.num_classes, use_attention=False))
+        if args.cuda in [0, 1]:
+            self.device = torch.device('cuda:'+str(args.cuda)
+                              if torch.cuda.is_available() else 'cpu')
 
     def reset_parameters(self):
         for conv in self.convs:
             conv.reset_parameters()
+
+    def init_hyperedge_attr(self, type, num_edges=None, x=None, hyperedge_index=None):
+        if type == 'rand':
+            hyperedge_attr = torch.randn((num_edges, self.num_features)).to(self.device)
+        elif type == 'avg':
+            hyperedge_attr = scatter_mean(x[hyperedge_index[0]],hyperedge_index[1], dim=0)
+        else:
+            hyperedge_attr = None
+        return hyperedge_attr
 
     def forward(self, data):
 
@@ -306,17 +751,20 @@ class HCHA(nn.Module):
         num_nodes = data.edge_index[0].max().item() + 1
 
         num_edges = data.edge_index[1].max().item() + 1
-        print(num_nodes, num_edges)
-        hyperedge_attr = torch.randn((num_edges, self.num_features))
-        print(hyperedge_attr.shape)
+        # print(num_nodes, num_edges)
+        
+        # hyperedge_attr = torch.randn((num_edges, self.num_features)).to(self.device)
+        if self.hyperedge_attr is None:
+            self.hyperedge_attr = self.init_hyperedge_attr(type=self.init_hedge, num_edges=num_edges, x=x, hyperedge_index=edge_index)
+        # print(hyperedge_attr.shape)
 
         for i, conv in enumerate(self.convs[:-1]):
-            print(i)
-            x = F.elu(conv(x, edge_index, hyperedge_attr = hyperedge_attr))
+            # print(i)
+            x = F.elu(conv(x, edge_index, hyperedge_attr = self.hyperedge_attr))
             x = F.dropout(x, p=self.dropout, training=self.training)
 #         x = F.dropout(x, p=self.dropout, training=self.training)
 
-        print("Ok")
+        # print("Ok")
         x = self.convs[-1](x, edge_index)
 
         return x

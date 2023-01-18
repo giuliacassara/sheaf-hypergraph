@@ -90,8 +90,13 @@ def parse_method(args, data):
     elif args.method == 'MLP':
         model = MLP_model(args)
 
-    elif args.method == 'Sheafs':
-        model = Sheafs(args)
+    elif args.method == 'DiagSheafs':
+        model = DiagSheafs(args)
+
+    elif args.method == 'OrthoSheafs':
+        model = OrthoSheafs(args)
+    elif args.method == 'GeneralSheafs':
+        model = GeneralSheafs(args)
 
     return model
 
@@ -170,11 +175,11 @@ def evaluate(model, data, split_idx, eval_func, result=None):
         out = F.log_softmax(out, dim=1)
 
     train_acc = eval_func(
-        data.y[split_idx['train']], out[split_idx['train']])
+        data.y[split_idx['train']], out[split_idx['train']], name='train')
     valid_acc = eval_func(
-        data.y[split_idx['valid']], out[split_idx['valid']])
+        data.y[split_idx['valid']], out[split_idx['valid']], name='valid')
     test_acc = eval_func(
-        data.y[split_idx['test']], out[split_idx['test']])
+        data.y[split_idx['test']], out[split_idx['test']], name='test')
 
 #     Also keep track of losses
     train_loss = F.nll_loss(
@@ -186,7 +191,7 @@ def evaluate(model, data, split_idx, eval_func, result=None):
     return train_acc, valid_acc, test_acc, train_loss, valid_loss, test_loss, out
 
 
-def eval_acc(y_true, y_pred):
+def eval_acc(y_true, y_pred, name):
     acc_list = []
     y_true = y_true.detach().cpu().numpy()
     y_pred = y_pred.argmax(dim=-1, keepdim=False).detach().cpu().numpy()
@@ -196,7 +201,7 @@ def eval_acc(y_true, y_pred):
     is_labeled = y_true == y_true
     correct = y_true[is_labeled] == y_pred[is_labeled]
     acc_list.append(float(np.sum(correct))/len(correct))
-
+    
     return sum(acc_list)/len(acc_list)
 
 def count_parameters(model):
@@ -211,6 +216,13 @@ def count_parameters(model):
 """
 
 if __name__ == '__main__':
+    def str2bool(v):
+        if v.lower() in ('yes', 'true', 't', 'y', '1'):
+            return True
+        elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+            return False
+        else:
+            raise argparse.ArgumentTypeError('Boolean value expected.')
     parser = argparse.ArgumentParser()
     parser.add_argument('--train_prop', type=float, default=0.5)
     parser.add_argument('--valid_prop', type=float, default=0.25)
@@ -268,6 +280,16 @@ if __name__ == '__main__':
     parser.add_argument('--UniGNN_use-norm', action="store_true", help='use norm in the final layer')
     parser.add_argument('--UniGNN_degV', default = 0)
     parser.add_argument('--UniGNN_degE', default = 0)
+    parser.add_argument('--wandb', default=True, type=bool)
+
+    parser.add_argument('--init_hedge', default="rand", type=str, choices=['rand', 'avg']) 
+    parser.add_argument('--use_attention', type=str2bool, default=True) #used in HCHA. if true ypergraph attention otherwise hypergraph conv
+    parser.add_argument('--tag', type=str, default='testing') #helper for wandb in order to filter out the testing runs. if set to testing we are in dev mode
+    parser.add_argument('--sheaf_normtype', type=str, default='degree_norm', choices=['degree_norm', 'block_norm']) #used to normalise the sheaf laplacian. will add other normalisations later
+    parser.add_argument('--sheaf_act', type=str, default='sigmoid', choices=['sigmoid', 'tanh', 'none']) #final activation used after predicting the dxd block
+    parser.add_argument('--sheaf_dropout', type=str2bool, default=False) #final activation used after predicting the dxd block
+
+
     
     parser.set_defaults(PMA=True)  # True: Use PMA. False: Use Deepsets.
     parser.set_defaults(add_self_loop=True)
@@ -286,7 +308,10 @@ if __name__ == '__main__':
     
     
     # # Part 1: Load data
-    
+    if args.wandb:
+        import wandb
+        wandb.init(sync_tensorboard=False, project='hyper_sheaf', reinit = False, config = args, entity='hyper_graphs', tags=[args.tag])
+        print('Monitoring using wandb')
     
     ### Load and preprocess data ###
     existing_dataset = ['20newsW100', 'ModelNet40', 'zoo',
@@ -341,17 +366,13 @@ if __name__ == '__main__':
         data = generate_norm_HNHN(H, data, args)
         data.edge_index[1] -= data.edge_index[1].min()
     
-    elif args.method in ['HCHA', 'HGNN']:
+    elif args.method in ['HCHA', 'HGNN', 'DiagSheafs','OrthoSheafs', 'GeneralSheafs']:
         data = ExtractV2E(data)
         if args.add_self_loop:
             data = Add_Self_Loops(data)
     #    Make the first he_id to be 0
         data.edge_index[1] -= data.edge_index[1].min()
-        
-    elif args.method in ['Sheafs']:
-        data = ExtractV2E(data)
-        if args.add_self_loop:
-            data = Add_Self_Loops(data)
+
     
     #     Get splits
     split_idx_lst = []
@@ -375,7 +396,9 @@ if __name__ == '__main__':
     model, data = model.to(device), data.to(device)
     
     num_params = count_parameters(model)
-    
+    print(f"Number of parameters: {num_params}")
+    if args.wandb:
+        wandb.watch(model)
     
     # # Part 3: Main. Training + Evaluation
     
@@ -390,15 +413,30 @@ if __name__ == '__main__':
     
     ### Training loop ###
     runtime_list = []
+
+    train_accs_runs = []
+    valid_accs_runs = []
+    test_accs_runs = []
+    train_loss_runs = []
+    valid_loss_runs = []
+    test_loss_runs = []
+
     for run in tqdm(range(args.runs)):
         start_time = time.time()
         split_idx = split_idx_lst[run]
         train_idx = split_idx['train'].to(device)
+     
         model.reset_parameters()
         optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
         best_val = float('-inf')
-        for epoch in range(args.epochs):
-            #         Training part
+        train_accs_one_run = []
+        valid_accs_one_run = []
+        test_accs_one_run = []
+        train_loss_one_run = []
+        valid_loss_one_run = []
+        test_loss_one_run = []
+        for epoch in range(args.epochs):  
+            # Training part
             model.train()
             optimizer.zero_grad()
             out = model(data)
@@ -420,14 +458,87 @@ if __name__ == '__main__':
                       f'Train Acc: {100 * result[0]:.2f}%, '
                       f'Valid Acc: {100 * result[1]:.2f}%, '
                       f'Test  Acc: {100 * result[2]:.2f}%')
+            if args.wandb:
+                train_accs_one_run.append(100 * result[0])
+                valid_accs_one_run.append(100 * result[1])
+                test_accs_one_run.append(100 * result[2])
+                train_loss_one_run.append(loss.detach().cpu())
+                valid_loss_one_run.append(result[4].detach().cpu())
+                test_loss_one_run.append(result[5].detach().cpu())
+
+            
+            # if we want stats per run:
+            # if args.wandb:
+            #     log_corpus = {
+            #         f'train_loss_run_{run}': loss,
+            #         f'val_loss_run_{run}': result[4],
+            #         f'test_loss_run_{run}': result[5],
+            #         f'train_acc_run_{run}': 100 * result[0],
+            #         f'test_acc_run_{run}': 100 * result[1],
+            #         f'val_acc_run_{run}': 100 * result[2]
+            #     }
+            #     wandb.log(log_corpus)
 
         end_time = time.time()
         runtime_list.append(end_time - start_time)
-    
+
+        if args.wandb:
+            #add training statistics from the crt running
+            train_accs_runs.append(train_accs_one_run)
+            valid_accs_runs.append(valid_accs_one_run)
+            test_accs_runs.append(test_accs_one_run)
+            train_loss_runs.append(train_loss_one_run)
+            valid_loss_runs.append(valid_loss_one_run)
+            test_loss_runs.append(test_loss_one_run)
+
         # logger.print_statistics(run)
+    
+
     
     ### Save results ###
     avg_time, std_time = np.mean(runtime_list), np.std(runtime_list)
+
+    if args.wandb:
+        train_accs_runs = np.array(train_accs_runs)
+        valid_accs_runs = np.array(valid_accs_runs)
+        test_accs_runs = np.array(test_accs_runs)
+        train_loss_runs = np.array(train_loss_runs)
+        valid_loss_runs = np.array(valid_loss_runs)
+        test_loss_runs = np.array(test_loss_runs)
+
+        train_accs_mean = np.mean(train_accs_runs, 0)
+        train_accs_std = np.std(train_accs_runs, 0)
+        valid_accs_mean = np.mean(valid_accs_runs, 0)
+        valid_accs_std = np.std(valid_accs_runs, 0)
+        test_accs_mean = np.mean(test_accs_runs, 0)
+        test_accs_std = np.std(test_accs_runs, 0)
+        train_loss_mean = np.mean(train_loss_runs, 0)
+        train_loss_std = np.std(train_loss_runs, 0)
+        valid_loss_mean = np.mean(valid_loss_runs, 0)
+        valid_loss_std = np.std(valid_loss_runs, 0)
+        test_loss_mean = np.mean(test_loss_runs, 0)
+        test_loss_std = np.std(test_loss_runs, 0)
+        
+
+
+
+        # pdb.set_trace()
+        for epoch in range(len(train_accs_mean)):
+            log_corpus = {
+                f'train_accs_mean': train_accs_mean[epoch],
+                f'val_accs_mean': valid_accs_mean[epoch],
+                f'test_accs_mean': test_accs_mean[epoch],
+                f'train_acc_std': train_accs_std[epoch],
+                f'test_acc_std': valid_accs_std[epoch],
+                f'val_acc_std': test_accs_std[epoch],
+                f'train_loss_mean': train_loss_mean[epoch],
+                f'val_loss_mean': valid_loss_mean[epoch],
+                f'test_loss_mean': test_loss_mean[epoch],
+                f'train_loss_std': train_loss_std[epoch],
+                f'test_loss_std': valid_loss_std[epoch],
+                f'val_loss_std': test_loss_std[epoch],
+            }
+            wandb.log(log_corpus, step=epoch)
 
     best_val, best_test = logger.print_statistics()
     res_root = 'hyperparameter_tuning'
