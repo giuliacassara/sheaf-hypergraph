@@ -288,6 +288,8 @@ if __name__ == '__main__':
     parser.add_argument('--sheaf_normtype', type=str, default='degree_norm', choices=['degree_norm', 'block_norm']) #used to normalise the sheaf laplacian. will add other normalisations later
     parser.add_argument('--sheaf_act', type=str, default='sigmoid', choices=['sigmoid', 'tanh', 'none']) #final activation used after predicting the dxd block
     parser.add_argument('--sheaf_dropout', type=str2bool, default=False) #final activation used after predicting the dxd block
+    parser.add_argument('--sheaf_left_proj', type=str2bool, default=False) #multiply to the left with IxW
+    parser.add_argument('--dynamic_sheaf', type=str2bool, default=False) #if set to True, a different sheaf is predicted at each layer
 
 
     

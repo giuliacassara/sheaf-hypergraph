@@ -227,8 +227,7 @@ class DiagSheafs(nn.Module):
         self.act = args.sheaf_act # type of nonlinearity used when predicting the dxd blocks
         self.hyperedge_attr = None
         self.sheaf_dropout = args.sheaf_dropout #dropout used/not-used in predicting the dxd blocks
-
-
+        self.left_proj = args.sheaf_left_proj
         if args.cuda in [0, 1]:
             self.device = torch.device('cuda:'+str(args.cuda)
                               if torch.cuda.is_available() else 'cpu')
@@ -236,29 +235,35 @@ class DiagSheafs(nn.Module):
             self.device = torch.device('cpu')
 
         self.lin = Linear(self.num_features, self.num_features*self.d, bias=False)
-        self.sheaf_lin = Linear(2*self.num_features, self.d, bias=False)
-        
+
+        self.dynamic_sheaf = args.dynamic_sheaf
+        self.sheaf_lin = nn.ModuleList()
 #         Note that add dropout to attention is default in the original paper
         self.convs = nn.ModuleList()
-        self.convs.append(HypergraphDiagSheafConv(self.num_features, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type))
+        self.convs.append(HypergraphDiagSheafConv(self.num_features, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj))
+        self.sheaf_lin.append(Linear(2*self.num_features, self.d, bias=False))
         
         #iulia Qs: add back the multi-layers?
         for _ in range(self.num_layers-1):
-           self.convs.append(HypergraphDiagSheafConv(self.MLP_hidden, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type))
+            self.convs.append(HypergraphDiagSheafConv(self.MLP_hidden, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj))
+            if self.dynamic_sheaf:
+                self.sheaf_lin.append(Linear(self.MLP_hidden+self.num_features, self.d, bias=False))
 
         self.lin2 = Linear(self.MLP_hidden*self.d, args.num_classes, bias=False)
 
     def reset_parameters(self):
         for conv in self.convs:
             conv.reset_parameters()
+        for sheaf_lin in self.sheaf_lin:
+            sheaf_lin.reset_parameters()
         self.lin.reset_parameters()
         self.lin2.reset_parameters()
-        self.sheaf_lin.reset_parameters()
+        
 
-    def predict_blocks(self, xs, es):
+    def predict_blocks(self, xs, es, sheaf_lin):
         # select all pairs (node, hyperedge)
         h_sheaf = torch.cat((xs,es), dim=-1) #sparse version of an NxEx2f tensor
-        h_sheaf = self.sheaf_lin(h_sheaf)  #sparse version of an NxExd tensor
+        h_sheaf = sheaf_lin(h_sheaf)  #sparse version of an NxExd tensor
         if self.act == 'sigmoid':
             h_sheaf = F.sigmoid(h_sheaf) # output d numbers for every entry in the incidence matrix
         elif self.act == 'tanh':
@@ -269,19 +274,25 @@ class DiagSheafs(nn.Module):
         return h_sheaf
 
     #this is exclusively for diagonal sheaf
-    def build_sheaf_incidence(self, x, e, hyperedge_index):
+    def build_sheaf_incidence(self, x, e, hyperedge_index, sheaf_lin):
         """ tmp
-        x: N x f 
-        e: E x f 
-        -> (concat) N x E x 2F -> (linear project) N x E x d (the elements on the diagonal of each dxd block)
+        x: Nd x f -> N x f
+        e: Ed x f -> E x f
+        -> (concat) N x E x (d+1)F -> (linear project) N x E x d (the elements on the diagonal of each dxd block)
         -> (reshape) (Nd x Ed) with NxE diagonal blocks of dimension dxd
 
         """
+        num_nodes = hyperedge_index[0].max().item() + 1
+        num_edges = hyperedge_index[1].max().item() + 1
+        x = x.view(num_nodes, self.d, x.shape[-1]).mean(1) # N x d x f -> N x f
+        e = e.view(num_edges, self.d, e.shape[-1]).mean(1) # N x d x f -> N x f
+
+
         row, col = hyperedge_index
 
         x_row = torch.index_select(x, dim=0, index=row)
         e_col = torch.index_select(e, dim=0, index=col)
-        h_sheaf = self.predict_blocks(x_row, e_col)
+        h_sheaf = self.predict_blocks(x_row, e_col, sheaf_lin)
         
         self.h_sheaf = h_sheaf #this is stored in self for testing purpose
 
@@ -327,19 +338,27 @@ class DiagSheafs(nn.Module):
         #if we are at the first epoch, initialise the attribute, otherwise use the previous ones
         if self.hyperedge_attr is None:
             self.hyperedge_attr = self.init_hyperedge_attr(self.init_hedge, num_edges=num_edges, x=x, hyperedge_index=edge_index)
-
-        #infer the sheaf as a sparse incidence matrix Nd x Ed, with each block being diagonal
-        h_sheaf_index, h_sheaf_attributes = self.build_sheaf_incidence(x, self.hyperedge_attr, edge_index)
+        
+        # #infer the sheaf as a sparse incidence matrix Nd x Ed, with each block being diagonal
+        # h_sheaf_index, h_sheaf_attributes = self.build_sheaf_incidence(x, self.hyperedge_attr, edge_index)
 
         # expand the input N x num_features -> Nd x num_features such that we can apply the propagation
         x = self.lin(x)
+        hyperedge_attr = self.lin(self.hyperedge_attr)
+
         x = x.view((x.shape[0]*self.d, self.num_features)) # (N * d) x num_features
- 
+        hyperedge_attr = hyperedge_attr.view((hyperedge_attr.shape[0]*self.d, self.num_features))
+
         for i, conv in enumerate(self.convs[:-1]):
+            #infer the sheaf as a sparse incidence matrix Nd x Ed, with each block being diagonal
+            if i == 0 or self.dynamic_sheaf:
+                h_sheaf_index, h_sheaf_attributes = self.build_sheaf_incidence(x, hyperedge_attr, edge_index, self.sheaf_lin[i])
             x = F.elu(conv(x, hyperedge_index=h_sheaf_index, alpha=h_sheaf_attributes, num_nodes=num_nodes, num_edges=num_edges))
             x = F.dropout(x, p=self.dropout, training=self.training)
 
 
+        if self.dynamic_sheaf:
+            h_sheaf_index, h_sheaf_attributes = self.build_sheaf_incidence(x, hyperedge_attr, edge_index, self.sheaf_lin[-1])
         x = self.convs[-1](x,  hyperedge_index=h_sheaf_index, alpha=h_sheaf_attributes, num_nodes=num_nodes, num_edges=num_edges)
         x = x.view(num_nodes, -1) # Nd x out_channels -> Nx(d*out_channels)
         x = self.lin2(x) # Nx(d*out_channels)-> N x num_classes
@@ -368,6 +387,7 @@ class OrthoSheafs(nn.Module):
         self.act = args.sheaf_act # type of nonlinearity used when predicting the dxd blocks
         self.hyperedge_attr = None
         self.sheaf_dropout = args.sheaf_dropout #dropout used/not-used in predicting the dxd blocks
+        self.left_proj = args.sheaf_left_proj
 
         if args.cuda in [0, 1]:
             self.device = torch.device('cuda:'+str(args.cuda)
@@ -375,30 +395,37 @@ class OrthoSheafs(nn.Module):
         else:
             self.device = torch.device('cpu')
 
+        self.dynamic_sheaf = args.dynamic_sheaf
+        self.orth_sheaf_lin = nn.ModuleList()
+
         self.lin = Linear(args.num_features, args.num_features*self.d, bias=False)
-        self.orth_sheaf_lin = Linear(2*args.num_features, self.d*(self.d-1)//2, bias=False) #d(d-1)/2 params to transform in an ortho matrix
+        self.orth_sheaf_lin.append(Linear(2*args.num_features, self.d*(self.d-1)//2, bias=False)) #d(d-1)/2 params to transform in an ortho matrix
         self.orth_transform = Orthogonal(d=self.d, orthogonal_map='householder') #method applied to transform params into ortho dxd matrix
 
 #       Note that add dropout to attention is default in the original paper
         self.convs = nn.ModuleList()
-        self.convs.append(HypergraphOrthoSheafConv(args.num_features, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type))
+        self.convs.append(HypergraphOrthoSheafConv(args.num_features, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj))
         
         for _ in range(self.num_layers-1):
-           self.convs.append(HypergraphOrthoSheafConv(args.MLP_hidden, args.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type))
-
+            self.convs.append(HypergraphOrthoSheafConv(args.MLP_hidden, args.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj))
+            if self.dynamic_sheaf:
+                self.orth_sheaf_lin.append(Linear(args.num_features+args.MLP_hidden, self.d*(self.d-1)//2, bias=False)) 
         self.lin2 = Linear(self.MLP_hidden*self.d, args.num_classes, bias=False)
 
     def reset_parameters(self):
         for conv in self.convs:
             conv.reset_parameters()
+        for ortho_sheaf_lin in self.orth_sheaf_lin:
+            ortho_sheaf_lin.reset_parameters()
         self.lin.reset_parameters()
         self.lin2.reset_parameters()
-        self.orth_sheaf_lin.reset_parameters()
+        
 
-    def predict_blocks(self, xs, es):
+    def predict_blocks(self, xs, es, orth_sheaf_lin):
+        
         # select all pairs (node, hyperedge)
         h_sheaf = torch.cat((xs,es), dim=-1)  #sparse version of a NxEx2f tensor
-        h_sheaf = self.orth_sheaf_lin(h_sheaf)  #output d(d-1)//2 numbers for every entry in the incidence matrix
+        h_sheaf = orth_sheaf_lin(h_sheaf)  #output d(d-1)//2 numbers for every entry in the incidence matrix
         
         if self.act == 'sigmoid':
             h_sheaf = F.sigmoid(h_sheaf)
@@ -411,7 +438,7 @@ class OrthoSheafs(nn.Module):
             h_orth_sheaf = F.dropout(h_orth_sheaf, p=self.dropout, training=self.training)
         return h_orth_sheaf
 
-    def build_ortho_sheaf_incidence(self, x, e, hyperedge_index, debug=False):
+    def build_ortho_sheaf_incidence(self, x, e, hyperedge_index, orth_sheaf_lin, debug=False):
         """ 
         x: N x d 
         e: N x f 
@@ -420,10 +447,15 @@ class OrthoSheafs(nn.Module):
         -> (reshape) (Nd x Ed)
 
         """
+        num_nodes = hyperedge_index[0].max().item() + 1
+        num_edges = hyperedge_index[1].max().item() + 1
+        x = x.view(num_nodes, self.d, x.shape[-1]).mean(1) # N x d x f -> N x f
+        e = e.view(num_edges, self.d, e.shape[-1]).mean(1) # N x d x f -> N x f
+
         row, col = hyperedge_index
         x_row = torch.index_select(x, dim=0, index=row)
         e_col = torch.index_select(e, dim=0, index=col)
-        h_orth_sheaf = self.predict_blocks(x_row, e_col)
+        h_orth_sheaf = self.predict_blocks(x_row, e_col, orth_sheaf_lin)
         
         # h_orth_sheaf = h_orth_sheaf * torch.eye(self.d, device=self.device)
 
@@ -478,17 +510,22 @@ class OrthoSheafs(nn.Module):
             self.hyperedge_attr = self.init_hyperedge_attr(self.init_hedge, num_edges=num_edges, x=x, hyperedge_index=edge_index)
 
         #infer the sheaf as a sparse incidence matrix Nd x Ed
-        h_orth_sheaf_index, h_orth_sheaf_attributes = self.build_ortho_sheaf_incidence(x, self.hyperedge_attr, edge_index)
+        # h_orth_sheaf_index, h_orth_sheaf_attributes = self.build_ortho_sheaf_incidence(x, self.hyperedge_attr, edge_index, self.orth_sheaf_lin[i])
         #expand the input Nd x num_features
         x = self.lin(x) #N x num_features -> N x (d*num_features)
+        hyperedge_attr = self.lin(self.hyperedge_attr)
         x = x.view((x.shape[0]*self.d, self.num_features)) # (N * d) x num_features
- 
+        hyperedge_attr = hyperedge_attr.view((hyperedge_attr.shape[0]*self.d, self.num_features)) # (E * d) x num_features
+        
         for i, conv in enumerate(self.convs[:-1]):
-
+            if i == 0 or self.dynamic_sheaf:
+                h_orth_sheaf_index, h_orth_sheaf_attributes = self.build_ortho_sheaf_incidence(x, hyperedge_attr, edge_index, self.orth_sheaf_lin[i])
             x = F.elu(conv(x, hyperedge_index=h_orth_sheaf_index, alpha=h_orth_sheaf_attributes, num_nodes=num_nodes, num_edges=num_edges))
             x = F.dropout(x, p=self.dropout, training=self.training)
 #         x = F.dropout(x, p=self.dropout, training=self.training)
 
+        if self.dynamic_sheaf:
+            h_orth_sheaf_index, h_orth_sheaf_attributes = self.build_ortho_sheaf_incidence(x, hyperedge_attr, edge_index, self.orth_sheaf_lin[-1])
         x = self.convs[-1](x,  hyperedge_index=h_orth_sheaf_index, alpha=h_orth_sheaf_attributes, num_nodes=num_nodes, num_edges=num_edges)
         x = x.view(num_nodes, -1) #Nd x out_channels -> Nx(d*out_channels)
         x = self.lin2(x) #N x (d*out_channels) -> N x num_classes
@@ -515,10 +552,11 @@ class GeneralSheafs(nn.Module):
         self.d = args.heads # dimension of the stalks
         self.init_hedge = args.init_hedge # how to initialise hyperedge attributes: avg or rand
         self.norm_type = args.sheaf_normtype #type of laplacian normalisation degree_norm or block_norm
+        assert self.norm_type == 'degree_norm' #block_norm still has bugss
         self.act = args.sheaf_act # type of nonlinearity used when predicting the dxd blocks
         self.hyperedge_attr = None
         self.sheaf_dropout = args.sheaf_dropout #dropout used/not-used in predicting the dxd blocks
-
+        self.left_proj = args.sheaf_left_proj
 
         if args.cuda in [0, 1]:
             self.device = torch.device('cuda:'+str(args.cuda)
@@ -526,29 +564,35 @@ class GeneralSheafs(nn.Module):
         else:
             self.device = torch.device('cpu')
 
+        self.dynamic_sheaf = args.dynamic_sheaf
+        self.general_sheaf_lin = nn.ModuleList()
+
         self.lin = Linear(args.num_features, args.num_features*self.d, bias=False)
-        self.general_sheaf_lin = Linear(2*args.num_features, self.d*self.d, bias=False) #d(d-1)/2 params to transform in an ortho matrix
+        self.general_sheaf_lin.append(Linear(2*args.num_features, self.d*self.d, bias=False)) #d(d-1)/2 params to transform in an ortho matrix
 
 #         Note that add dropout to attention is default in the original paper
         self.convs = nn.ModuleList()
-        self.convs.append(HypergraphGeneralSheafConv(args.num_features, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type))
+        self.convs.append(HypergraphGeneralSheafConv(args.num_features, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj))
         #iulia Qs: add back the multi-layers?
         for _ in range(self.num_layers-1):
-           self.convs.append(HypergraphGeneralSheafConv(args.MLP_hidden, args.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type))
+            if self.dynamic_sheaf:
+                self.general_sheaf_lin.append(Linear(args.num_features+args.MLP_hidden, self.d*self.d, bias=False))
+            self.convs.append(HypergraphGeneralSheafConv(args.MLP_hidden, args.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj))
 
         self.lin2 = Linear(self.MLP_hidden*self.d, args.num_classes, bias=False)
 
     def reset_parameters(self):
         for conv in self.convs:
             conv.reset_parameters()
+        for general_sheaf_lin in self.general_sheaf_lin:
+            general_sheaf_lin.reset_parameters()
         self.lin.reset_parameters()
         self.lin2.reset_parameters()
-        self.general_sheaf_lin.reset_parameters()
 
-    def predict_blocks(self, xs, es):
+    def predict_blocks(self, xs, es, general_sheaf_lin, type='concat_lin'):
         # select each pair (node, hedge)
         h_sheaf = torch.cat((xs,es), dim=-1) 
-        h_sheaf = self.general_sheaf_lin(h_sheaf)  #output d*d numbers for every entry in the incidence matrix
+        h_sheaf = general_sheaf_lin(h_sheaf)  #output d*d numbers for every entry in the incidence matrix
         if self.act == 'sigmoid':
             h_sheaf = F.sigmoid(h_sheaf)
         elif self.act == 'tanh':
@@ -558,7 +602,7 @@ class GeneralSheafs(nn.Module):
         h_sheaf = h_sheaf.view(h_sheaf.shape[0], self.d, self.d) #dxd ortho matrix
         return h_sheaf
          
-    def build_general_sheaf_incidence(self, x, e, hyperedge_index, debug=False):
+    def build_general_sheaf_incidence(self, x, e, hyperedge_index, general_sheaf_lin, debug=False):
         """ 
         x: N x f
         e: N x f 
@@ -570,7 +614,7 @@ class GeneralSheafs(nn.Module):
         x_row = torch.index_select(x, dim=0, index=row)
         e_col = torch.index_select(e, dim=0, index=col)
 
-        h_general_sheaf = self.predict_blocks(x_row, e_col)
+        h_general_sheaf = self.predict_blocks(x_row, e_col, general_sheaf_lin)
         #Iulia: Temporary debug
         # h_general_sheaf = h_general_sheaf * torch.eye(self.d, device=self.device)
         self.h_general_sheaf = h_general_sheaf #for debug purpose
@@ -599,6 +643,30 @@ class GeneralSheafs(nn.Module):
         hyperedge_index_1 = self.d * hyperedge_index[1] + d_range_edges
         hyperedge_index_1 = hyperedge_index_1.permute((1,0)).reshape(1,-1)
         h_general_sheaf_index = torch.concat((hyperedge_index_0, hyperedge_index_1), 0)
+
+        if self.norm_type == 'block_norm':
+            pass
+            # num_nodes = hyperedge_index[0].max().item() + 1
+            # num_edges = hyperedge_index[1].max().item() + 1
+
+            # to_be_inv_nodes = torch.bmm(h_general_sheaf, h_general_sheaf.permute(0,2,1)) 
+            # to_be_inv_nodes = scatter_add(to_be_inv_nodes, row, dim=0, dim_size=num_nodes)
+
+            # to_be_inv_edges = torch.bmm(h_general_sheaf.permute(0,2,1), h_general_sheaf)
+            # to_be_inv_edges = scatter_add(to_be_inv_edges, col, dim=0, dim_size=num_edges)
+
+
+            # d_sqrt_inv_nodes = utils.batched_sym_matrix_pow(to_be_inv_nodes, -1.0) #n_nodes x d x d
+            # d_sqrt_inv_edges = utils.batched_sym_matrix_pow(to_be_inv_edges, -1.0) #n_edges x d x d
+            
+
+            # d_sqrt_inv_nodes_large = torch.index_select(d_sqrt_inv_nodes, dim=0, index=row)
+            # d_sqrt_inv_edges_large = torch.index_select(d_sqrt_inv_edges, dim=0, index=col)
+
+
+            # alpha_norm = torch.bmm(d_sqrt_inv_nodes_large, h_general_sheaf)
+            # alpha_norm = torch.bmm(alpha_norm, d_sqrt_inv_edges_large)
+            # h_general_sheaf = alpha_norm.clamp(min=-1, max=1)
 
         #!!! Is this the correct reshape??? Please check!!
         h_general_sheaf_attributes = h_general_sheaf.reshape(-1)
@@ -629,16 +697,23 @@ class GeneralSheafs(nn.Module):
             self.hyperedge_attr = self.init_hyperedge_attr(self.init_hedge, num_edges=num_edges, x=x, hyperedge_index=edge_index)
 
         #infer the sheaf as a sparse incidence matrix Nd x Ed
-        h_general_sheaf_index, h_general_sheaf_attributes = self.build_general_sheaf_incidence(x, self.hyperedge_attr, edge_index)
+        # h_general_sheaf_index, h_general_sheaf_attributes = self.build_general_sheaf_incidence(x, self.hyperedge_attr, edge_index)
+
 
         x = self.lin(x) #N x num_features -> N x (d*num_features)
+        hyperedge_attr = self.lin(self.hyperedge_attr)
         x = x.view((x.shape[0]*self.d, self.num_features)) # N x (d*num_features) -> (N * d) x num_features 
-
+        hyperedge_attr = hyperedge_attr.view((hyperedge_attr.shape[0]*self.d, self.num_features))
+        
         for i, conv in enumerate(self.convs[:-1]):
+            if i == 0 or self.dynamic_sheaf:
+                h_general_sheaf_index, h_general_sheaf_attributes = self.build_general_sheaf_incidence(x, hyperedge_attr, edge_index, self.general_sheaf_lin[i])
             x = F.elu(conv(x, hyperedge_index=h_general_sheaf_index, alpha=h_general_sheaf_attributes, num_nodes=num_nodes, num_edges=num_edges))
             x = F.dropout(x, p=self.dropout, training=self.training)
 #         x = F.dropout(x, p=self.dropout, training=self.training)
 
+        if self.dynamic_sheaf:
+            h_general_sheaf_index, h_general_sheaf_attributes = self.build_general_sheaf_incidence(x, hyperedge_attr, edge_index, self.general_sheaf_lin[-1])
         x = self.convs[-1](x,  hyperedge_index=h_general_sheaf_index, alpha=h_general_sheaf_attributes, num_nodes=num_nodes, num_edges=num_edges)
         x = x.view(num_nodes, -1) # Nd x out_channels -> N x (d*out_channels)
         x = self.lin2(x) # N x (d*out_channels) -> N x num_channels

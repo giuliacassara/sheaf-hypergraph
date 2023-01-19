@@ -352,6 +352,7 @@ class HypergraphConv(MessagePassing):
         else:
             self.register_parameter('bias', None)
 
+
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -445,7 +446,7 @@ class HypergraphDiagSheafConv(MessagePassing):
     r"""
     
     """
-    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm',
+    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', left_proj=None,
                  **kwargs):
         kwargs.setdefault('aggr', 'add')
         super().__init__(flow='source_to_target', node_dim=0, **kwargs)
@@ -454,6 +455,10 @@ class HypergraphDiagSheafConv(MessagePassing):
         self.out_channels = out_channels
         self.d = d
         self.norm_type = norm_type
+        self.left_proj = left_proj
+        
+        if self.left_proj:
+            self.lin_left_proj = Linear(self.d, self.d, bias=False)
 
         self.lin = Linear(in_channels, out_channels, bias=False)
         if bias:
@@ -466,6 +471,8 @@ class HypergraphDiagSheafConv(MessagePassing):
 
     #to allow multiple runs reset all parameters used
     def reset_parameters(self):
+        if self.left_proj:
+            self.lin_left_proj.reset_parameters()
         self.lin.reset_parameters()
         zeros(self.bias)
 
@@ -507,7 +514,10 @@ class HypergraphDiagSheafConv(MessagePassing):
                 the sparse incidence matrix Nd x Md} from nodes to edges.
             alpha (Tensor, optional): restriction maps
         """ 
-        
+        if self.left_proj:
+            x = x.t().reshape(-1, self.d)
+            x = self.lin_left_proj(x)
+            x = x.reshape(-1,num_nodes * self.d).t()
         x = self.lin(x)
         D_inv, B_inv = self.normalisation_matrices(x, hyperedge_index, alpha, num_nodes, num_edges, self.norm_type)
 
@@ -536,7 +546,7 @@ class HypergraphOrthoSheafConv(MessagePassing):
     r"""
     
     """
-    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm',
+    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', left_proj=None,
                  **kwargs):
         kwargs.setdefault('aggr', 'add')
         super().__init__(flow='source_to_target', node_dim=0, **kwargs)
@@ -546,6 +556,9 @@ class HypergraphOrthoSheafConv(MessagePassing):
         self.d = d
         self.norm_type=norm_type
 
+        self.left_proj = left_proj
+        if self.left_proj:
+            self.lin_left_proj = Linear(self.d, self.d, bias=False)
         self.lin = Linear(in_channels, out_channels, bias=False)
         if bias:
             self.bias = Parameter(torch.Tensor(out_channels))
@@ -557,6 +570,8 @@ class HypergraphOrthoSheafConv(MessagePassing):
 
     #to allow multiple runs reset all parameters used
     def reset_parameters(self):
+        if self.left_proj:
+            self.lin_left_proj.reset_parameters()
         self.lin.reset_parameters()
         zeros(self.bias)
 
@@ -597,7 +612,10 @@ class HypergraphOrthoSheafConv(MessagePassing):
                 the sparse incidence matrix Nd x Md} from nodes to edges.
             alpha (Tensor, optional): restriction maps
         """ 
-        
+        if self.left_proj:
+            x = x.t().reshape(-1, self.d)
+            x = self.lin_left_proj(x)
+            x = x.reshape(-1,num_nodes * self.d).t()
         x = self.lin(x)    
         D_inv, B_inv = self.normalisation_matrices(x, hyperedge_index, alpha, num_nodes, num_edges, norm_type=self.norm_type)
 
@@ -628,7 +646,7 @@ class HypergraphGeneralSheafConv(MessagePassing):
     r"""
     
     """
-    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm',
+    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', left_proj=None,
                  **kwargs):
         kwargs.setdefault('aggr', 'add')
         super().__init__(flow='source_to_target', node_dim=0, **kwargs)
@@ -636,6 +654,11 @@ class HypergraphGeneralSheafConv(MessagePassing):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.d = d
+
+        self.left_proj = left_proj
+        
+        if self.left_proj:
+            self.lin_left_proj = Linear(self.d, self.d, bias=False)
 
         self.lin = Linear(in_channels, out_channels, bias=False)
         if bias:
@@ -650,6 +673,8 @@ class HypergraphGeneralSheafConv(MessagePassing):
 
     #to allow multiple runs reset all parameters used
     def reset_parameters(self):
+        if self.left_proj:
+            self.lin_left_proj.reset_parameters()
         self.lin.reset_parameters()
         zeros(self.bias)
 
@@ -668,7 +693,20 @@ class HypergraphGeneralSheafConv(MessagePassing):
             return D, B
         elif norm_type == 'block_norm':
             # not implemented yet
-            raise NotImplementedError
+            # raise NotImplementedError
+            # D = x.new_ones(num_nodes*self.d)
+            # B = x.new_ones(num_edges*self.d)
+            D = scatter_add(x.new_ones(hyperedge_index.size(1)), hyperedge_index[0], dim=0, dim_size=num_nodes*self.d) 
+            D = 1.0 / D
+            D[D == float("inf")] = 0
+
+            B = scatter_add(x.new_ones(hyperedge_index.size(1)), hyperedge_index[1], dim=0, dim_size=num_edges*self.d)
+            B = 1.0 / B
+            B[B == float("inf")] = 0
+
+            return D, B
+            return D, B
+
 
     def forward(self, x: Tensor, hyperedge_index: Tensor,
                 alpha, 
@@ -682,6 +720,11 @@ class HypergraphGeneralSheafConv(MessagePassing):
                 the sparse incidence matrix Nd x Md} from nodes to edges.
             alpha (Tensor, optional): restriction maps
         """ 
+        if self.left_proj:
+            x = x.t().reshape(-1, self.d)
+            x = self.lin_left_proj(x)
+            x = x.reshape(-1,num_nodes * self.d).t()
+
         x = self.lin(x)
         D_inv, B_inv = self.normalisation_matrices(x, hyperedge_index, alpha, num_nodes, num_edges, norm_type=self.norm_type)
         
