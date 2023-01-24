@@ -290,7 +290,9 @@ if __name__ == '__main__':
     parser.add_argument('--sheaf_dropout', type=str2bool, default=False) #final activation used after predicting the dxd block
     parser.add_argument('--sheaf_left_proj', type=str2bool, default=False) #multiply to the left with IxW
     parser.add_argument('--dynamic_sheaf', type=str2bool, default=False) #if set to True, a different sheaf is predicted at each layer
-
+    parser.add_argument('--sheaf_special_head', type=str2bool, default=False) #if set to True, a special head corresponding to alpha=1 and d=heads-1 in that case)
+    parser.add_argument('--sheaf_pred_block', type=str, default="MLP_var1") #if set to True, a special head corresponding to alpha=1 and d=heads-1 in that case)
+    parser.add_argument('--sheaf_transformer_head', type=int, default=1) #only when sheaf_pred_block==transformer. The number of transformer head used to predict the dxd blocks
 
     
     parser.set_defaults(PMA=True)  # True: Use PMA. False: Use Deepsets.

@@ -6,6 +6,8 @@ from torch.autograd import Variable
 from torch.nn.modules.module import Module
 from torch.nn.parameter import Parameter
 
+import numpy as np
+
 
 
 class HyperGraphConvolution(Module):
