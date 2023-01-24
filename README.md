@@ -22,6 +22,11 @@ For General Hypergraph Sheaves:
 CUDA_VISIBLE_DEVICES=0 python train.py --dname cora --method GeneralSheafs --MLP_hidden 256 --Classifier_hidden 256 --All_num_layers 2 --heads 5 --init_hedge avg --epochs 100 --sheaf_normtype degree_norm --runs 20
 ```
 
+For unit tests on the code please run:
+```
+CUDA_VISIBLE_DEVICES="" python test_sheaf_conv.py
+```
+
 ## Hyperparameters to tune:
 **—method:** DiagSheafs, OrthoSheafs, GeneralSheafs           # vary the constrans on the dxd block
 
@@ -35,7 +40,7 @@ Obs: GeneralSheafs does not work with block_norm yet
 
 **—sheaf_act**: sigmoid, tanh, none          # activation used on top of the dxd block
 
-**—sheaf_dropout:** any float number 0-1          # dropout p on top of the dxd block
+**—sheaf_dropout:** True or Dalse         # dropout p on top of the dxd block. if True inherit p value from —dropout
 
 **—sheaf_left_proj:** True or False          # use [(IxW1) X W2] or [X W2] inside the model 
 
@@ -43,7 +48,7 @@ Obs: GeneralSheafs does not work with block_norm yet
 
 **—sheaf_special_head:** True or False          # append a, extra dimension =1 for each (node, hedge)
 
-**—sheaf_transformer_head:** int (usually 1-8)          # number of heads used in the transformer predictor
+**—sheaf_transformer_head:** int (usually 1-8)          # number of heads used in the transformer predictor. MLP_hidden needs to divide this
 
 Obs: only when sheaf_pred_block==transformer
 
@@ -58,6 +63,8 @@ Obs: only when sheaf_pred_block==transformer
 **—MLP_hidden**          # number of hidden units in each layer
 
 **—add_self_loop**          # addor not self loop
+
+**—dropout**
 
 are there others?
 
