@@ -444,7 +444,7 @@ class HypergraphDiagSheafConv(MessagePassing):
     r"""
     
     """
-    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', left_proj=None,
+    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', left_proj=None, norm=None,
                  **kwargs):
         kwargs.setdefault('aggr', 'add')
         super().__init__(flow='source_to_target', node_dim=0, **kwargs)
@@ -454,11 +454,28 @@ class HypergraphDiagSheafConv(MessagePassing):
         self.d = d
         self.norm_type = norm_type
         self.left_proj = left_proj
+        self.norm = norm
         
         if self.left_proj:
-            self.lin_left_proj = Linear(self.d, self.d, bias=False)
+            self.lin_left_proj = MLP(in_channels=d, 
+                        hidden_channels=d,
+                        out_channels=d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+                        
+           
 
-        self.lin = Linear(in_channels, out_channels, bias=False)
+        self.lin = MLP(in_channels=in_channels, 
+                        hidden_channels=out_channels,
+                        out_channels=out_channels,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+                        
+        
         if bias:
             self.bias = Parameter(torch.Tensor(out_channels))
         else:
@@ -472,6 +489,7 @@ class HypergraphDiagSheafConv(MessagePassing):
         if self.left_proj:
             self.lin_left_proj.reset_parameters()
         self.lin.reset_parameters()
+
         zeros(self.bias)
 
     def normalisation_matrices(self, x, hyperedge_index, alpha, num_nodes, num_edges, norm_type='degree_norm'):
@@ -544,7 +562,7 @@ class HypergraphOrthoSheafConv(MessagePassing):
     r"""
     
     """
-    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', left_proj=None,
+    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', left_proj=None, norm=None,
                  **kwargs):
         kwargs.setdefault('aggr', 'add')
         super().__init__(flow='source_to_target', node_dim=0, **kwargs)
@@ -553,11 +571,24 @@ class HypergraphOrthoSheafConv(MessagePassing):
         self.out_channels = out_channels
         self.d = d
         self.norm_type=norm_type
+        self.norm=norm
 
         self.left_proj = left_proj
         if self.left_proj:
-            self.lin_left_proj = Linear(self.d, self.d, bias=False)
-        self.lin = Linear(in_channels, out_channels, bias=False)
+            self.lin_left_proj = MLP(in_channels=d, 
+                        hidden_channels=d,
+                        out_channels=d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+        self.lin = MLP(in_channels=in_channels, 
+                        hidden_channels=d,
+                        out_channels=out_channels,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
         if bias:
             self.bias = Parameter(torch.Tensor(out_channels))
         else:
@@ -644,7 +675,7 @@ class HypergraphGeneralSheafConv(MessagePassing):
     r"""
     
     """
-    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', left_proj=None,
+    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', left_proj=None, norm=None,
                  **kwargs):
         kwargs.setdefault('aggr', 'add')
         super().__init__(flow='source_to_target', node_dim=0, **kwargs)
@@ -652,13 +683,26 @@ class HypergraphGeneralSheafConv(MessagePassing):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.d = d
+        self.norm=norm
 
         self.left_proj = left_proj
         
         if self.left_proj:
-            self.lin_left_proj = Linear(self.d, self.d, bias=False)
+            self.lin_left_proj = MLP(in_channels=d, 
+                        hidden_channels=d,
+                        out_channels=d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
 
-        self.lin = Linear(in_channels, out_channels, bias=False)
+        self.lin = MLP(in_channels=in_channels, 
+                        hidden_channels=d,
+                        out_channels=out_channels,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
         if bias:
             self.bias = Parameter(torch.Tensor(out_channels))
         else:
@@ -927,6 +971,7 @@ class MLP(nn.Module):
                     self.normalizations.append(nn.BatchNorm1d(hidden_channels))
                 self.lins.append(nn.Linear(hidden_channels, out_channels))
         elif Normalization == 'ln':
+            print("using LN")
             if num_layers == 1:
                 # just linear layer i.e. logistic regression
                 if InputNorm:

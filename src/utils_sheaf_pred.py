@@ -15,6 +15,7 @@ def predict_blocks(x, e, hyperedge_index, sheaf_lin, args):
 
     h_sheaf = torch.cat((xs,es), dim=-1) #sparse version of an NxEx2f tensor
     
+    
     h_sheaf = sheaf_lin(h_sheaf)  #sparse version of an NxExd tensor
     if args.sheaf_act == 'sigmoid':
         h_sheaf = F.sigmoid(h_sheaf) # output d numbers for every entry in the incidence matrix
@@ -33,6 +34,7 @@ def predict_blocks_var2(x, hyperedge_index, sheaf_lin, args):
 
     # select all pairs (node, hyperedge)
     h_sheaf = torch.cat((xs,es), dim=-1) #sparse version of an NxEx2f tensor
+
     h_sheaf = sheaf_lin(h_sheaf)  #sparse version of an NxExd tensor
 
 
@@ -53,6 +55,8 @@ def predict_blocks_var3(x, hyperedge_index, sheaf_lin, args):
 
     # select all pairs (node, hyperedge)
     h_sheaf = torch.cat((xs,es), dim=-1) #sparse version of an NxEx2f tensor
+
+    
     h_sheaf = sheaf_lin(h_sheaf)  #sparse version of an NxExd tensor
     if args.sheaf_act== 'sigmoid':
         h_sheaf = F.sigmoid(h_sheaf) # output d numbers for every entry in the incidence matrix
@@ -84,7 +88,7 @@ def predict_blocks_transformer(x, hyperedge_index, transformer_layer, transforme
         #for each group create all-to-all combinations of edges (fully connected per hyperdge)
         # edges = edges + (list(itertools.product(aa, repeat=2)))
         edges = edges + (list(itertools.permutations(aa, 2)))
-s
+
     device = torch.device('cuda:'+str(args.cuda)
                               if torch.cuda.is_available() else 'cpu')
     edges = torch.tensor(np.array(edges)).t().to(device)
@@ -95,6 +99,7 @@ s
     # print(transformer_output.mean())
 
     h_sheaf = torch.cat((transformer_input, transformer_output), -1)
+
     h_sheaf = transformer_lin_layer(h_sheaf)
     if args.sheaf_act == 'sigmoid':
         h_sheaf = F.sigmoid(h_sheaf) # output d numbers for every entry in the incidence matrix

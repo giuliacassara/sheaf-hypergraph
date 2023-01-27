@@ -20,6 +20,7 @@ from tqdm import tqdm
 
 from layers import *
 from models import *
+from edgnn import EquivSetGNN, SheafEquivSetGNN_Diag
 from preprocessing import *
 
 from convert_datasets_to_pygDataset import dataset_Hypergraph
@@ -97,7 +98,10 @@ def parse_method(args, data):
         model = OrthoSheafs(args)
     elif args.method == 'GeneralSheafs':
         model = GeneralSheafs(args)
-
+    elif args.method == 'EquivSetGNN':
+        model = EquivSetGNN(num_features=args.num_features, num_classes=args.num_classes, args=args)
+    elif args.method == 'SheafEquivSetGNN_Diag':
+        model = SheafEquivSetGNN_Diag(num_features=args.num_features, num_classes=args.num_classes, args=args)
     return model
 
 
@@ -281,7 +285,16 @@ if __name__ == '__main__':
     parser.add_argument('--UniGNN_degV', default = 0)
     parser.add_argument('--UniGNN_degE', default = 0)
     parser.add_argument('--wandb', default=True, type=bool)
+    parser.add_argument('--activation', default='relu', choices=['Id','relu', 'prelu'])
+    
+    # Args for EDGNN
+    parser.add_argument('--MLP2_num_layers', default=-1, type=int, help='layer number of mlp2')
+    parser.add_argument('--MLP3_num_layers', default=-1, type=int, help='layer number of mlp3')
+    parser.add_argument('--edconv_type', default='EquivSet', type=str, choices=['EquivSet', 'JumpLink', 'MeanDeg', 'Attn', 'TwoSets'])
+    parser.add_argument('--restart_alpha', default=0.5, type=float)
+    parser.add_argument('--AllSet_input_norm', default=True)
 
+    # Args for Sheaves
     parser.add_argument('--init_hedge', default="rand", type=str, choices=['rand', 'avg']) 
     parser.add_argument('--use_attention', type=str2bool, default=True) #used in HCHA. if true ypergraph attention otherwise hypergraph conv
     parser.add_argument('--tag', type=str, default='testing') #helper for wandb in order to filter out the testing runs. if set to testing we are in dev mode
@@ -325,18 +338,53 @@ if __name__ == '__main__':
                         'walmart-trips-100', 'house-committees-100',
                         'cora', 'citeseer', 'pubmed']
         
+    # if args.dname in existing_dataset:
+    #     dname = args.dname
+    #     if dname in ['cora', 'citeseer','pubmed']:
+    #             p2raw = '../data/AllSet_all_raw_data/cocitation/'
+    #     elif dname in ['coauthor_cora', 'coauthor_dblp']:
+    #             p2raw = '../data/AllSet_all_raw_data/coauthorship/'
+    #     dataset = dataset_Hypergraph(name=dname,root = '../data/pyg_data/hypergraph_dataset_updated/',
+    #                                      p2raw = p2raw)
+    #     data = dataset.data
+    #     args.num_features = dataset.num_features
+    #     args.num_classes = dataset.num_classes
+    #         #         Shift the y label to start with 0
+    #     if not hasattr(data, 'n_x'):
+    #         data.n_x = torch.tensor([data.x.shape[0]])
+    #     if not hasattr(data, 'num_hyperedges'):
+    #         # note that we assume the he_id is consecutive.
+    #         data.num_hyperedges = torch.tensor(
+    #             [data.edge_index[0].max()-data.n_x[0]+1])
+
+    synthetic_list = ['amazon-reviews', 'walmart-trips', 'house-committees', 'walmart-trips-100', 'house-committees-100']
+    
     if args.dname in existing_dataset:
         dname = args.dname
-        if dname in ['cora', 'citeseer','pubmed']:
+        f_noise = args.feature_noise
+        if (f_noise is not None) and dname in synthetic_list:
+            p2raw = '../data/AllSet_all_raw_data/'
+            dataset = dataset_Hypergraph(name=dname, 
+                    feature_noise=f_noise,
+                    p2raw = p2raw)
+        else:
+            if dname in ['cora', 'citeseer','pubmed']:
                 p2raw = '../data/AllSet_all_raw_data/cocitation/'
-        elif dname in ['coauthor_cora', 'coauthor_dblp']:
+            elif dname in ['coauthor_cora', 'coauthor_dblp']:
                 p2raw = '../data/AllSet_all_raw_data/coauthorship/'
-        dataset = dataset_Hypergraph(name=dname,root = '../data/pyg_data/hypergraph_dataset_updated/',
+            elif dname in ['yelp']:
+                p2raw = '../data/AllSet_all_raw_data/yelp/'
+            else:
+                p2raw = '../data/AllSet_all_raw_data/'
+            dataset = dataset_Hypergraph(name=dname,root = '../data/pyg_data/hypergraph_dataset_updated/',
                                          p2raw = p2raw)
         data = dataset.data
         args.num_features = dataset.num_features
         args.num_classes = dataset.num_classes
+        if args.dname in ['yelp', 'walmart-trips', 'house-committees', 'walmart-trips-100', 'house-committees-100']:
             #         Shift the y label to start with 0
+            args.num_classes = len(data.y.unique())
+            data.y = data.y - data.y.min()
         if not hasattr(data, 'n_x'):
             data.n_x = torch.tensor([data.x.shape[0]])
         if not hasattr(data, 'num_hyperedges'):
@@ -370,7 +418,7 @@ if __name__ == '__main__':
         data = generate_norm_HNHN(H, data, args)
         data.edge_index[1] -= data.edge_index[1].min()
     
-    elif args.method in ['HCHA', 'HGNN', 'DiagSheafs','OrthoSheafs', 'GeneralSheafs']:
+    elif args.method in ['HCHA', 'HGNN', 'DiagSheafs','OrthoSheafs', 'GeneralSheafs', 'EquivSetGNN', 'SheafEquivSetGNN_Diag']:
         data = ExtractV2E(data)
         if args.add_self_loop:
             data = Add_Self_Loops(data)

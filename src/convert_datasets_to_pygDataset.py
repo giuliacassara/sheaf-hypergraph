@@ -36,6 +36,7 @@ class dataset_Hypergraph(InMemoryDataset):
     def __init__(self, root = '../data/pyg_data/hypergraph_dataset_updated/', name = None, 
                  p2raw = None,
                  train_percent = 0.01,
+                 feature_noise=0.1,
                  transform=None, pre_transform=None):
         
         existing_dataset = ['20newsW100', 'ModelNet40', 'zoo', 
@@ -50,6 +51,8 @@ class dataset_Hypergraph(InMemoryDataset):
         else:
             self.name = name
                 
+        #iulia added
+        self.feature_noise = feature_noise
         self._train_percent = train_percent
 
         
@@ -121,8 +124,30 @@ class dataset_Hypergraph(InMemoryDataset):
                             train_percent = self._train_percent,
                             )
 
-                
+                #iulia readded
+                elif self.name in ['amazon-reviews', 'walmart-trips', 'house-committees']:
+                    if self.feature_noise is None:
+                        raise ValueError(f'for cornell datasets, feature noise cannot be {self.feature_noise}')
+                    tmp_data = load_cornell_dataset(path = self.p2raw,
+                        dataset = self.name,
+                        feature_noise = self.feature_noise,
+                        train_percent = self._train_percent)
+                elif self.name in ['walmart-trips-100', 'house-committees-100']:
+                    if self.feature_noise is None:
+                        raise ValueError(f'for cornell datasets, feature noise cannot be {self.feature_noise}')
+                    feature_dim = int(self.name.split('-')[-1])
+                    tmp_name = '-'.join(self.name.split('-')[:-1])
+                    tmp_data = load_cornell_dataset(path = self.p2raw,
+                        dataset = tmp_name,
+                        feature_dim = feature_dim,
+                        feature_noise = self.feature_noise,
+                        train_percent = self._train_percent)
 
+
+                elif self.name == 'yelp':
+                    tmp_data = load_yelp_dataset(path = self.p2raw,
+                            dataset = self.name,
+                            train_percent = self._train_percent)
                 else:
                     tmp_data = load_LE_dataset(path = self.p2raw, 
                                               dataset = self.name,

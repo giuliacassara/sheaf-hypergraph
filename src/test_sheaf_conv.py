@@ -11,6 +11,7 @@ import torch
 import numpy as np
 
 from scipy import sparse as sp
+from edgnn import SheafEquivSetGNN_Diag
 
 
 def get_test_config():
@@ -30,10 +31,25 @@ def get_test_config():
         'sheaf_left_proj': False,
         'sheaf_act': 'sigmoid',
         'sheaf_dropout': False,
-        'sheaf_special_head': False
+        'sheaf_special_head': False,
+
+        'activation': 'relu',
+        'MLP_num_layers': 0,
+        'MLP2_num_layers': 0,
+        'MLP3_num_layers': 1,
+        'edconv_type': 'EquivSet',
+        'AllSet_input_norm': True,
+        'restart_alpha': 0.0,
+        'aggregate': 'mean',
+        'normalization': 'ln',
+        'Classifier_hidden': 256,
+        'Classifier_num_layers': 2,
+
 
 
     }
+
+
 
 def is_valid_permutation_matrix(P: np.ndarray, n: int):
     #from: https://github.com/twitter-research/neural-sheaf-diffusion/blob/master/lib/perm_utils.py
@@ -179,6 +195,41 @@ def test_equivariance_sheaf_diag():
         assert(torch.allclose(out, perm_out, atol=1e-6))
         print("model DiagSheafs is permutation equivariant")
 
+def test_gradients_diag():
+    torch.random.manual_seed(0)
+    np.random.seed(0)
+
+    args = get_test_config()
+    in_channels = args['num_features']
+    out_channels = args['num_classes']
+    d = args['heads']
+    args = Namespace(**args)
+    print(args)
+
+
+    hyperedge_index = torch.tensor([[0, 0, 1, 1, 2, 3], [0, 1, 0, 1, 0, 1]])
+    num_nodes = hyperedge_index[0].max().item() + 1
+    num_edges = hyperedge_index[1].max().item() + 1
+    x = torch.randn((num_nodes, in_channels))
+    y = torch.randint(0,out_channels-1,(num_nodes,))
+    
+    diag_sheaf_model = DiagSheafs(args)
+    # diag_sheaf_conv = HypergraphDiagSheafConv(in_channels, out_channels, d=3, device=device)
+    data = Data(x=x, edge_index=hyperedge_index, y=y)
+
+    optimizer = torch.optim.Adam(diag_sheaf_model.parameters(), lr=0.1, weight_decay=5e-4) 
+    optimizer.zero_grad()
+
+    out = diag_sheaf_model(data)
+    out = F.log_softmax(out, dim=1)
+    loss = nn.NLLLoss()(out, data.y)
+    loss.backward()
+    optimizer.step()
+
+    # Check that gradients are back-propagated through the Laplacian in particular
+    for param in diag_sheaf_model.parameters():
+        assert param.grad is not None
+    print("All good")
 
 # Test general:
 def test_sheaf_conv_general():
@@ -353,11 +404,51 @@ def test_equivariance_sheaf_ortho():
         assert(torch.allclose(out, perm_out, atol=1e-6))
         print("model OrthoSheafs is permutation equivariant")
 
+
+def test_equivariance_sheaf_EDHNN_diag():
+    torch.random.manual_seed(0)
+    np.random.seed(0)
+
+    args = get_test_config()
+    in_channels = args['num_features']
+    out_channels = args['num_classes']
+    d = args['heads']
+    args = Namespace(**args)
+    print(args)
+
+
+    hyperedge_index = torch.tensor([[0, 0, 1, 1, 2, 3], [0, 1, 0, 1, 0, 1]])
+    num_nodes = hyperedge_index[0].max().item() + 1
+    num_edges = hyperedge_index[1].max().item() + 1
+    x = torch.randn((num_nodes, in_channels))
+
+    with torch.no_grad():
+        diag_sheaf_model = SheafEquivSetGNN_Diag(num_features=args.num_features, num_classes=args.num_classes, args=args)
+        # diag_sheaf_conv = HypergraphDiagSheafConv(in_channels, out_channels, d=3, device=device)
+        data = Data(x=x, edge_index=hyperedge_index)
+
+        P = generate_permutation_matrices(size=num_nodes, amount=1)[0]
+        perm_data = permute_hypergraph(data, P)
+
+        # this is just to test the sheaf prediction
+        # h_sheaf_index, h_sheaf_attributes = diag_sheaf_model.build_sheaf_incidence(x, hyperedge_attr, hyperedge_index, layer_idx=0, debug=False)
+
+        #this is to test the perm equiv of prediction, sheaf generation is inside anyway
+        out = diag_sheaf_model(data)
+        out = torch.FloatTensor(P.astype(np.float64) @ out.numpy().astype(np.float64))
+        perm_out = diag_sheaf_model(perm_data)
+        print(out.mean(), perm_out.mean())
+
+        assert(torch.allclose(out, perm_out, atol=1e-6))
+        print("model DiagSheafs is permutation equivariant")
+
 if __name__ == '__main__':
     # test_sheaf_conv_diag()
     # test_sheaf_conv_general()
     # test_sheaf_conv_ortho()
     # test_equivariance_sheaf_diag()
-    test_equivariance_sheaf_general()
+    # test_equivariance_sheaf_general()
     # test_equivariance_sheaf_ortho()
+    # test_gradients_diag()
+    test_equivariance_sheaf_EDHNN_diag()
 

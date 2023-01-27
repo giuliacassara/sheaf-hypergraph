@@ -234,39 +234,87 @@ class DiagSheafs(nn.Module):
         self.left_proj = args.sheaf_left_proj
         self.special_head = args.sheaf_special_head
         self.args = args
+        self.norm = args.AllSet_input_norm
+
         if args.cuda in [0, 1]:
             self.device = torch.device('cuda:'+str(args.cuda)
                               if torch.cuda.is_available() else 'cpu')
         else:
             self.device = torch.device('cpu')
 
-        self.lin = Linear(self.num_features, self.num_features*self.d, bias=False)
+        self.lin = MLP(in_channels=self.num_features, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.MLP_hidden*self.d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=False)
+        
         self.prediction_type = args.sheaf_pred_block
 
         self.dynamic_sheaf = args.dynamic_sheaf
+
         self.sheaf_lin = nn.ModuleList()
 #         Note that add dropout to attention is default in the original paper
         self.convs = nn.ModuleList()
-        self.convs.append(HypergraphDiagSheafConv(self.num_features, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj))
+        self.convs.append(HypergraphDiagSheafConv(self.MLP_hidden, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj, norm=self.norm))
         
         self.transformer_layer = nn.ModuleList()
         self.transformer_lin_layer = nn.ModuleList()
+        
+
         if self.prediction_type == 'transformer':
             transformer_head = args.sheaf_transformer_head
-            self.transformer_layer.append(torch_geometric.nn.TransformerConv(in_channels=self.num_features, out_channels=self.MLP_hidden//transformer_head,heads=transformer_head))
-            self.transformer_lin_layer.append(nn.Linear(self.MLP_hidden + self.num_features, self.d))
+            self.transformer_layer.append(torch_geometric.nn.TransformerConv(in_channels=self.MLP_hidden, out_channels=self.MLP_hidden//transformer_head,heads=transformer_head))
+            self.transformer_lin_layer.append(
+                MLP(in_channels=self.MLP_hidden + self.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm))
+                        
+            
         else:
-            self.sheaf_lin.append(Linear(2*self.num_features, self.d, bias=False))
-        
+            self.sheaf_lin.append(
+                MLP(in_channels=2*self.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+                        )
+                    
+            
         #iulia Qs: add back the multi-layers?
         for _ in range(self.num_layers-1):
-            self.convs.append(HypergraphDiagSheafConv(self.MLP_hidden, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj))
+            self.convs.append(HypergraphDiagSheafConv(self.MLP_hidden, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj, norm=self.norm))
             if self.dynamic_sheaf:
                 if self.prediction_type == 'transformer':
                     self.transformer_layer.append(torch_geometric.nn.TransformerConv(in_channels=self.MLP_hidden, out_channels=self.MLP_hidden//transformer_head,heads=transformer_head))
-                    self.transformer_lin_layer.append(nn.Linear(self.MLP_hidden + self.num_features, self.d))
+                    self.transformer_lin_layer.append(
+                        MLP(in_channels=self.MLP_hidden + self.MLP_hidden, 
+                            hidden_channels=args.MLP_hidden,
+                            out_channels=self.d,
+                            num_layers=1,
+                            dropout=0.0,
+                            Normalization='ln',
+                            InputNorm=self.norm)
+                            )
+                        
                 else:
-                    self.sheaf_lin.append(Linear(self.MLP_hidden + self.num_features, self.d, bias=False))
+                    self.sheaf_lin.append(
+                        MLP(in_channels=self.MLP_hidden + self.MLP_hidden, 
+                            hidden_channels=args.MLP_hidden,
+                            out_channels=self.d,
+                            num_layers=1,
+                            dropout=0.0,
+                            Normalization='ln',
+                            InputNorm=self.norm)
+                            )
+                    
 
         self.lin2 = Linear(self.MLP_hidden*self.d, args.num_classes, bias=False)
 
@@ -280,8 +328,10 @@ class DiagSheafs(nn.Module):
         for transformer_layer in self.transformer_layer:
             transformer_layer.reset_parameters()
 
+        
         self.lin.reset_parameters()
         self.lin2.reset_parameters()    
+
 
     #this is exclusively for diagonal sheaf
     def build_sheaf_incidence(self, x, e, hyperedge_index, layer_idx=None):
@@ -364,11 +414,12 @@ class DiagSheafs(nn.Module):
         # h_sheaf_index, h_sheaf_attributes = self.build_sheaf_incidence(x, self.hyperedge_attr, edge_index)
 
         # expand the input N x num_features -> Nd x num_features such that we can apply the propagation
+
         x = self.lin(x)
         hyperedge_attr = self.lin(self.hyperedge_attr)
 
-        x = x.view((x.shape[0]*self.d, self.num_features)) # (N * d) x num_features
-        hyperedge_attr = hyperedge_attr.view((hyperedge_attr.shape[0]*self.d, self.num_features))
+        x = x.view((x.shape[0]*self.d, self.MLP_hidden)) # (N * d) x num_features
+        hyperedge_attr = hyperedge_attr.view((hyperedge_attr.shape[0]*self.d, self.MLP_hidden))
 
         for i, conv in enumerate(self.convs[:-1]):
             #infer the sheaf as a sparse incidence matrix Nd x Ed, with each block being diagonal
@@ -378,10 +429,11 @@ class DiagSheafs(nn.Module):
             x = F.dropout(x, p=self.dropout, training=self.training)
 
 
-        if self.dynamic_sheaf:
+        if len(self.convs) == 1 or self.dynamic_sheaf:
             h_sheaf_index, h_sheaf_attributes = self.build_sheaf_incidence(x, hyperedge_attr, edge_index, layer_idx=-1)
         x = self.convs[-1](x,  hyperedge_index=h_sheaf_index, alpha=h_sheaf_attributes, num_nodes=num_nodes, num_edges=num_edges)
         x = x.view(num_nodes, -1) # Nd x out_channels -> Nx(d*out_channels)
+
         x = self.lin2(x) # Nx(d*out_channels)-> N x num_classes
 
         return x
@@ -411,7 +463,8 @@ class OrthoSheafs(nn.Module):
         self.left_proj = args.sheaf_left_proj
         self.special_head = args.sheaf_special_head
         self.args = args
-        
+        self.norm = args.AllSet_input_norm
+
         if args.cuda in [0, 1]:
             self.device = torch.device('cuda:'+str(args.cuda)
                               if torch.cuda.is_available() else 'cpu')
@@ -428,26 +481,63 @@ class OrthoSheafs(nn.Module):
         if self.prediction_type == 'transformer':
             transformer_head = args.sheaf_transformer_head
             self.transformer_layer.append(torch_geometric.nn.TransformerConv(in_channels=self.num_features, out_channels=self.MLP_hidden//transformer_head,heads=transformer_head))
-            self.transformer_lin_layer.append(nn.Linear(self.MLP_hidden + self.num_features, self.d*(self.d-1)//2))
+            self.transformer_lin_layer.append(
+                MLP(in_channels=2*self.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.d*(self.d-1)//2,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm))
         else:
-            self.orth_sheaf_lin.append(Linear(2*self.num_features, self.d*(self.d-1)//2, bias=False))
+            self.orth_sheaf_lin.append(
+                    MLP(in_channels=2*self.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.d*(self.d-1)//2,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm))
+                
 
 
-        self.lin = Linear(args.num_features, args.num_features*self.d, bias=False)
+        self.lin = MLP(in_channels=self.num_features, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.MLP_hidden*self.d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=False)
+
         self.orth_transform = Orthogonal(d=self.d, orthogonal_map='householder') #method applied to transform params into ortho dxd matrix
 
 #       Note that add dropout to attention is default in the original paper
         self.convs = nn.ModuleList()
-        self.convs.append(HypergraphOrthoSheafConv(args.num_features, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj))
+        self.convs.append(HypergraphOrthoSheafConv(args.MLP_hidden, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj, norm=self.norm))
         
         for _ in range(self.num_layers-1):
-            self.convs.append(HypergraphOrthoSheafConv(args.MLP_hidden, args.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj))
+            self.convs.append(HypergraphOrthoSheafConv(args.MLP_hidden, args.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj, norm=self.norm))
             if self.dynamic_sheaf:
                 if self.prediction_type == 'transformer':
                     self.transformer_layer.append(torch_geometric.nn.TransformerConv(in_channels=self.MLP_hidden, out_channels=self.MLP_hidden//transformer_head,heads=transformer_head))
-                    self.transformer_lin_layer.append(nn.Linear(self.MLP_hidden + self.num_features, self.d*(self.d-1)//2))
+                    self.transformer_lin_layer.append(
+                        MLP(in_channels=2*self.MLP_hidden, 
+                            hidden_channels=args.MLP_hidden,
+                            out_channels=self.d*(self.d-1)//2,
+                            num_layers=1,
+                            dropout=0.0,
+                            Normalization='ln',
+                            InputNorm=self.norm
+                            ))
                 else:
-                    self.orth_sheaf_lin.append(Linear(args.num_features+args.MLP_hidden, self.d*(self.d-1)//2, bias=False)) 
+                    self.orth_sheaf_lin.append(
+                        MLP(in_channels=2*self.MLP_hidden, 
+                            hidden_channels=args.MLP_hidden,
+                            out_channels=self.d*(self.d-1)//2,
+                            num_layers=1,
+                            dropout=0.0,
+                            Normalization='ln',
+                            InputNorm=self.norm))
                 
         self.lin2 = Linear(self.MLP_hidden*self.d, args.num_classes, bias=False)
 
@@ -563,8 +653,8 @@ class OrthoSheafs(nn.Module):
         #expand the input Nd x num_features
         x = self.lin(x) #N x num_features -> N x (d*num_features)
         hyperedge_attr = self.lin(self.hyperedge_attr)
-        x = x.view((x.shape[0]*self.d, self.num_features)) # (N * d) x num_features
-        hyperedge_attr = hyperedge_attr.view((hyperedge_attr.shape[0]*self.d, self.num_features)) # (E * d) x num_features
+        x = x.view((x.shape[0]*self.d, self.MLP_hidden)) # (N * d) x num_features
+        hyperedge_attr = hyperedge_attr.view((hyperedge_attr.shape[0]*self.d, self.MLP_hidden)) # (E * d) x num_features
         
         for i, conv in enumerate(self.convs[:-1]):
             if i == 0 or self.dynamic_sheaf:
@@ -616,8 +706,15 @@ class GeneralSheafs(nn.Module):
         self.dynamic_sheaf = args.dynamic_sheaf
         self.prediction_type = args.sheaf_pred_block
         self.args = args
-        
-        self.lin = Linear(args.num_features, args.num_features*self.d, bias=False)
+        self.norm = args.AllSet_input_norm
+
+        self.lin = MLP(in_channels=self.num_features, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.MLP_hidden*self.d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=False)
         
         self.general_sheaf_lin = nn.ModuleList()
         self.transformer_layer = nn.ModuleList()
@@ -625,25 +722,57 @@ class GeneralSheafs(nn.Module):
 
         if self.prediction_type == 'transformer':
             transformer_head = args.sheaf_transformer_head
-            self.transformer_layer.append(torch_geometric.nn.TransformerConv(in_channels=self.num_features, out_channels=self.MLP_hidden//transformer_head,heads=transformer_head))
-            self.transformer_lin_layer.append(nn.Linear(self.MLP_hidden + self.num_features, self.d*self.d))
+            self.transformer_layer.append(torch_geometric.nn.TransformerConv(in_channels=self.MLP_hidden, out_channels=self.MLP_hidden//transformer_head,heads=transformer_head))
+            self.transformer_lin_layer.append(
+                MLP(in_channels=2*self.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.d*self.d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+            )
         else:
-            self.general_sheaf_lin.append(Linear(2*self.num_features, self.d*self.d, bias=False))
+            self.general_sheaf_lin.append(
+                 MLP(in_channels=2*self.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.d*self.d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+            )
         
-        self.general_sheaf_lin.append(Linear(2*args.num_features, self.d*self.d, bias=False)) #d(d-1)/2 params to transform in an ortho matrix
+        self.general_sheaf_lin.append(Linear(2*args.MLP_hidden, self.d*self.d, bias=False)) #d(d-1)/2 params to transform in an ortho matrix
 
 #         Note that add dropout to attention is default in the original paper
         self.convs = nn.ModuleList()
-        self.convs.append(HypergraphGeneralSheafConv(args.num_features, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj))
+        self.convs.append(HypergraphGeneralSheafConv(args.MLP_hidden, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj, norm=self.norm))
         #iulia Qs: add back the multi-layers?
         for _ in range(self.num_layers-1):
             if self.dynamic_sheaf:
                 if self.prediction_type == 'transformer':
                     self.transformer_layer.append(torch_geometric.nn.TransformerConv(in_channels=self.MLP_hidden, out_channels=self.MLP_hidden//transformer_head,heads=transformer_head))
-                    self.transformer_lin_layer.append(nn.Linear(self.MLP_hidden + self.MLP_hidden, self.d*self.d))
+                    self.transformer_lin_layer.append(
+                        MLP(in_channels=2*self.MLP_hidden, 
+                            hidden_channels=args.MLP_hidden,
+                            out_channels=self.d*self.d,
+                            num_layers=1,
+                            dropout=0.0,
+                            Normalization='ln',
+                            InputNorm=self.norm)
+                    )
                 else:
-                    self.general_sheaf_lin.append(Linear(args.MLP_hidden+self.MLP_hidden, self.d*self.d, bias=False))
-            self.convs.append(HypergraphGeneralSheafConv(args.MLP_hidden, args.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj))
+                    self.general_sheaf_lin.append(
+                        MLP(in_channels=2*self.MLP_hidden, 
+                            hidden_channels=args.MLP_hidden,
+                            out_channels=self.d*self.d,
+                            num_layers=1,
+                            dropout=0.0,
+                            Normalization='ln',
+                            InputNorm=self.norm)
+                    )
+            self.convs.append(HypergraphGeneralSheafConv(args.MLP_hidden, args.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj,norm=self.norm))
 
         self.lin2 = Linear(self.MLP_hidden*self.d, args.num_classes, bias=False)
 
@@ -778,8 +907,8 @@ class GeneralSheafs(nn.Module):
 
         x = self.lin(x) #N x num_features -> N x (d*num_features)
         hyperedge_attr = self.lin(self.hyperedge_attr)
-        x = x.view((x.shape[0]*self.d, self.num_features)) # N x (d*num_features) -> (N * d) x num_features 
-        hyperedge_attr = hyperedge_attr.view((hyperedge_attr.shape[0]*self.d, self.num_features))
+        x = x.view((x.shape[0]*self.d, self.MLP_hidden)) # N x (d*num_features) -> (N * d) x num_features 
+        hyperedge_attr = hyperedge_attr.view((hyperedge_attr.shape[0]*self.d, self.MLP_hidden))
         
         for i, conv in enumerate(self.convs[:-1]):
             if i == 0 or self.dynamic_sheaf:
