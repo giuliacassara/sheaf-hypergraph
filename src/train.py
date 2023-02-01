@@ -20,7 +20,7 @@ from tqdm import tqdm
 
 from layers import *
 from models import *
-from edgnn import EquivSetGNN, SheafEquivSetGNN_Diag
+from edgnn import EquivSetGNN, SheafEquivSetGNN
 from preprocessing import *
 
 from convert_datasets_to_pygDataset import dataset_Hypergraph
@@ -91,17 +91,21 @@ def parse_method(args, data):
     elif args.method == 'MLP':
         model = MLP_model(args)
 
-    elif args.method == 'DiagSheafs':
-        model = DiagSheafs(args)
+    elif args.method in ['DiagSheafs', 'OrthoSheafs', 'GeneralSheafs']:
+        model = HyperSheafs(args, args.method)
 
-    elif args.method == 'OrthoSheafs':
-        model = OrthoSheafs(args)
-    elif args.method == 'GeneralSheafs':
-        model = GeneralSheafs(args)
+    # elif args.method == 'OrthoSheafs':
+    #     model = OrthoSheafs(args)
+    # elif args.method == 'GeneralSheafs':
+    #     model = GeneralSheafs(args)
     elif args.method == 'EquivSetGNN':
         model = EquivSetGNN(num_features=args.num_features, num_classes=args.num_classes, args=args)
     elif args.method == 'SheafEquivSetGNN_Diag':
-        model = SheafEquivSetGNN_Diag(num_features=args.num_features, num_classes=args.num_classes, args=args)
+        model = SheafEquivSetGNN(num_features=args.num_features, num_classes=args.num_classes, sheaf_type='DiagEDGNN', args=args)
+    elif args.method == 'SheafEquivSetGNN_Ortho':
+        model = SheafEquivSetGNN(num_features=args.num_features, num_classes=args.num_classes, sheaf_type='OrthoEDGNN', args=args)
+    elif args.method == 'SheafEquivSetGNN_General':
+        model = SheafEquivSetGNN(num_features=args.num_features, num_classes=args.num_classes, sheaf_type='GeneralEDGNN', args=args)
     return model
 
 
@@ -287,12 +291,11 @@ if __name__ == '__main__':
     parser.add_argument('--wandb', default=True, type=bool)
     parser.add_argument('--activation', default='relu', choices=['Id','relu', 'prelu'])
     
-    # Args for EDGNN
+    # Args just for EDGNN
     parser.add_argument('--MLP2_num_layers', default=-1, type=int, help='layer number of mlp2')
     parser.add_argument('--MLP3_num_layers', default=-1, type=int, help='layer number of mlp3')
     parser.add_argument('--edconv_type', default='EquivSet', type=str, choices=['EquivSet', 'JumpLink', 'MeanDeg', 'Attn', 'TwoSets'])
     parser.add_argument('--restart_alpha', default=0.5, type=float)
-    parser.add_argument('--AllSet_input_norm', default=True)
 
     # Args for Sheaves
     parser.add_argument('--init_hedge', default="rand", type=str, choices=['rand', 'avg']) 
@@ -306,7 +309,7 @@ if __name__ == '__main__':
     parser.add_argument('--sheaf_special_head', type=str2bool, default=False) #if set to True, a special head corresponding to alpha=1 and d=heads-1 in that case)
     parser.add_argument('--sheaf_pred_block', type=str, default="MLP_var1") #if set to True, a special head corresponding to alpha=1 and d=heads-1 in that case)
     parser.add_argument('--sheaf_transformer_head', type=int, default=1) #only when sheaf_pred_block==transformer. The number of transformer head used to predict the dxd blocks
-
+    parser.add_argument('--AllSet_input_norm', default=True)
     
     parser.set_defaults(PMA=True)  # True: Use PMA. False: Use Deepsets.
     parser.set_defaults(add_self_loop=True)
@@ -418,7 +421,7 @@ if __name__ == '__main__':
         data = generate_norm_HNHN(H, data, args)
         data.edge_index[1] -= data.edge_index[1].min()
     
-    elif args.method in ['HCHA', 'HGNN', 'DiagSheafs','OrthoSheafs', 'GeneralSheafs', 'EquivSetGNN', 'SheafEquivSetGNN_Diag']:
+    elif args.method in ['HCHA', 'HGNN', 'DiagSheafs','OrthoSheafs', 'GeneralSheafs', 'EquivSetGNN', 'SheafEquivSetGNN_Diag', 'SheafEquivSetGNN_Ortho', 'SheafEquivSetGNN_General']:
         data = ExtractV2E(data)
         if args.add_self_loop:
             data = Add_Self_Loops(data)

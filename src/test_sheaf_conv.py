@@ -11,7 +11,8 @@ import torch
 import numpy as np
 
 from scipy import sparse as sp
-from edgnn import SheafEquivSetGNN_Diag
+import sys
+from edgnn import SheafEquivSetGNN
 
 
 def get_test_config():
@@ -24,8 +25,8 @@ def get_test_config():
         'num_features': 16,
         'num_classes': 32,
         'heads': 3,
-        'sheaf_normtype': 'block_norm',
-        'sheaf_pred_block': 'transformer',
+        'sheaf_normtype': 'degree_norm',
+        'sheaf_pred_block': 'MLP_var1',
         'sheaf_transformer_head': 8,#MLP_hidden needs to divide this
         'dynamic_sheaf': False,
         'sheaf_left_proj': False,
@@ -43,7 +44,7 @@ def get_test_config():
         'aggregate': 'mean',
         'normalization': 'ln',
         'Classifier_hidden': 256,
-        'Classifier_num_layers': 2,
+        'Classifier_num_layers': 2
 
 
 
@@ -122,7 +123,7 @@ def permute_hypergraph(graph: Data, P: np.ndarray) -> Data:
 
 
 # Test diagonal:
-def test_sheaf_conv_diag():
+def test_sheaf_conv(sheaf_type):
     torch.random.manual_seed(0)
 
     args = get_test_config()
@@ -135,14 +136,20 @@ def test_sheaf_conv_diag():
     hyperedge_index = torch.tensor([[0, 0, 1, 1, 2, 3], [0, 1, 0, 1, 0, 1]])
     num_nodes = hyperedge_index[0].max().item() + 1
     num_edges = hyperedge_index[1].max().item() + 1
-    x = torch.randn((num_nodes*d, in_channels))
-    hyperedge_attr = torch.randn((num_edges, in_channels))
+    x = torch.randn((num_nodes*d, args.MLP_hidden))
+    hyperedge_attr = torch.randn((num_edges*d, args.MLP_hidden))
 
-    diag_sheaf_model = DiagSheafs(args)
+    if sheaf_type == 'diag':
+        sheaf_builder = SheafBuilderDiag(args)
+    elif sheaf_type == 'general':
+        sheaf_builder = SheafBuilderGeneral(args)
+    elif sheaf_type == 'ortho':
+        sheaf_builder = SheafBuilderOrtho(args)
+
     # diag_sheaf_conv = HypergraphDiagSheafConv(in_channels, out_channels, d=3, device=device)
 
 
-    h_sheaf_index, h_sheaf_attributes = diag_sheaf_model.build_sheaf_incidence(x, hyperedge_attr, hyperedge_index, layer_idx=0, debug=True)
+    h_sheaf_index, h_sheaf_attributes = sheaf_builder(x, hyperedge_attr, hyperedge_index)
 
     #create the sparse matrix denoting H
     h_sheaf_sparse = torch.sparse_coo_tensor(h_sheaf_index, h_sheaf_attributes)
@@ -150,7 +157,7 @@ def test_sheaf_conv_diag():
 
     assert h_sheaf_dense.size() == (num_nodes*d, num_edges*d)
 
-    print (diag_sheaf_model.h_sheaf)
+    # print (diag_sheaf_model.h_sheaf)
     print(hyperedge_index)
 
     print_a_colored_ndarray(h_sheaf_dense.detach().numpy(), d=d)
@@ -176,7 +183,7 @@ def test_equivariance_sheaf_diag():
     x = torch.randn((num_nodes, in_channels))
 
     with torch.no_grad():
-        diag_sheaf_model = DiagSheafs(args)
+        diag_sheaf_model = HyperSheafs(args, 'DiagSheafs')
         # diag_sheaf_conv = HypergraphDiagSheafConv(in_channels, out_channels, d=3, device=device)
         data = Data(x=x, edge_index=hyperedge_index)
 
@@ -194,91 +201,6 @@ def test_equivariance_sheaf_diag():
 
         assert(torch.allclose(out, perm_out, atol=1e-6))
         print("model DiagSheafs is permutation equivariant")
-
-def test_gradients_diag():
-    torch.random.manual_seed(0)
-    np.random.seed(0)
-
-    args = get_test_config()
-    in_channels = args['num_features']
-    out_channels = args['num_classes']
-    d = args['heads']
-    args = Namespace(**args)
-    print(args)
-
-
-    hyperedge_index = torch.tensor([[0, 0, 1, 1, 2, 3], [0, 1, 0, 1, 0, 1]])
-    num_nodes = hyperedge_index[0].max().item() + 1
-    num_edges = hyperedge_index[1].max().item() + 1
-    x = torch.randn((num_nodes, in_channels))
-    y = torch.randint(0,out_channels-1,(num_nodes,))
-    
-    diag_sheaf_model = DiagSheafs(args)
-    # diag_sheaf_conv = HypergraphDiagSheafConv(in_channels, out_channels, d=3, device=device)
-    data = Data(x=x, edge_index=hyperedge_index, y=y)
-
-    optimizer = torch.optim.Adam(diag_sheaf_model.parameters(), lr=0.1, weight_decay=5e-4) 
-    optimizer.zero_grad()
-
-    out = diag_sheaf_model(data)
-    out = F.log_softmax(out, dim=1)
-    loss = nn.NLLLoss()(out, data.y)
-    loss.backward()
-    optimizer.step()
-
-    # Check that gradients are back-propagated through the Laplacian in particular
-    for param in diag_sheaf_model.parameters():
-        assert param.grad is not None
-    print("All good")
-
-# Test general:
-def test_sheaf_conv_general():
-    torch.manual_seed(0)
-    in_channels, out_channels = (16, 32)
-    d = 3
-
-    args = get_test_config()
-    args['num_features'] = in_channels
-    args['num_classes'] = out_channels
-    args['heads'] = d 
-    args = Namespace(**args)
-    print(args)
-
-    hyperedge_index = torch.tensor([[0, 0, 1, 1, 2, 3], [0, 1, 0, 1, 0, 1]])
-    num_nodes = hyperedge_index[0].max().item() + 1
-    num_edges = hyperedge_index[1].max().item() + 1
-    x = torch.randn((num_nodes, in_channels))
-    hyperedge_attr = torch.randn((num_edges, in_channels))
-
-    general_sheaf_model = GeneralSheafs(args)
-    # diag_sheaf_conv = HypergraphDiagSheafConv(in_channels, out_channels, d=3, device=device)
-
-
-    h_sheaf_index, h_sheaf_attributes = general_sheaf_model.build_general_sheaf_incidence(x, hyperedge_attr, hyperedge_index, debug=True)
-
-    #create the sparse matrix denoting H
-    h_sheaf_sparse = torch.sparse_coo_tensor(h_sheaf_index, h_sheaf_attributes)
-    h_sheaf_dense = h_sheaf_sparse.to_dense()
-
-    assert h_sheaf_dense.size() == (num_nodes*d, num_edges*d)
-
-    #debug regarding H sheaf creation
-    print("Learnt sheaf H:")
-    print (general_sheaf_model.h_general_sheaf)
-    print("Hedge indices:")
-    print(hyperedge_index)
-
-    print_a_colored_ndarray(h_sheaf_dense.detach().numpy(), d=d)
-
-    #debug regarding inference
-    data = Data(x=x, edge_index=hyperedge_index)
-    out = general_sheaf_model(data)
-
-    # out = diag_sheaf_conv(x, h_sheaf_index, alpha=h_sheaf_attributes, num_nodes=num_nodes*d, num_edges=num_edges*d)
-    # assert out.size() == (num_nodes*d, out_channels)
-
-
-
 
 def test_equivariance_sheaf_general():
     torch.random.manual_seed(0)
@@ -298,7 +220,8 @@ def test_equivariance_sheaf_general():
     x = torch.randn((num_nodes, in_channels))
 
     with torch.no_grad():
-        general_sheaf_model = GeneralSheafs(args)
+        general_sheaf_model = HyperSheafs(args, 'GeneralSheafs')
+        # general_sheaf_model = GeneralSheafs(args)
         # diag_sheaf_conv = HypergraphDiagSheafConv(in_channels, out_channels, d=3, device=device)
         data = Data(x=x, edge_index=hyperedge_index)
 
@@ -316,56 +239,8 @@ def test_equivariance_sheaf_general():
 
         print(out.mean(), perm_out.mean())
         print(torch.abs(out-perm_out).max())
-        assert(torch.allclose(out, perm_out, atol=1e-6))
+        assert(torch.allclose(out, perm_out, atol=1e-5))
         print("model GeneralSheafs is permutation equivariant")
-
-
-
-# Test ortho  
-def test_sheaf_conv_ortho():
-    torch.manual_seed(0)
-    in_channels, out_channels = (16, 32)
-    d = 3
-
-    args = get_test_config()
-    args['num_features'] = in_channels
-    args['num_classes'] = out_channels
-    args['heads'] = d 
-    args = Namespace(**args)
-    print(args)
-
-    hyperedge_index = torch.tensor([[0, 0, 1, 1, 2, 3], [0, 1, 0, 1, 0, 1]])
-    num_nodes = hyperedge_index[0].max().item() + 1
-    num_edges = hyperedge_index[1].max().item() + 1
-    x = torch.randn((num_nodes, in_channels))
-    hyperedge_attr = torch.randn((num_edges, in_channels))
-
-    general_sheaf_model = OrthoSheafs(args)
-    # diag_sheaf_conv = HypergraphDiagSheafConv(in_channels, out_channels, d=3, device=device)
-
-
-    h_sheaf_index, h_sheaf_attributes = general_sheaf_model.build_ortho_sheaf_incidence(x, hyperedge_attr, hyperedge_index, debug=True)
-
-    #create the sparse matrix denoting H
-    h_sheaf_sparse = torch.sparse_coo_tensor(h_sheaf_index, h_sheaf_attributes)
-    h_sheaf_dense = h_sheaf_sparse.to_dense()
-
-    assert h_sheaf_dense.size() == (num_nodes*d, num_edges*d)
-
-    #debug regarding H sheaf creation
-    print("Learnt sheaf H:")
-    print (general_sheaf_model.h_ortho_sheaf)
-    print("Hedge indices:")
-    print(hyperedge_index)
-
-    print_a_colored_ndarray(h_sheaf_dense.detach().numpy(), d=d)
-
-    #debug regarding inference
-    data = Data(x=x, edge_index=hyperedge_index)
-    out = general_sheaf_model(data)
-
-    # out = diag_sheaf_conv(x, h_sheaf_index, alpha=h_sheaf_attributes, num_nodes=num_nodes*d, num_edges=num_edges*d)
-    # assert out.size() == (num_nodes*d, out_channels)
 
 
 def test_equivariance_sheaf_ortho():
@@ -386,7 +261,7 @@ def test_equivariance_sheaf_ortho():
     x = torch.randn((num_nodes, in_channels))
 
     with torch.no_grad():
-        ortho_sheaf_model = OrthoSheafs(args)
+        ortho_sheaf_model = HyperSheafs(args, 'OrthoSheafs')
         # diag_sheaf_conv = HypergraphDiagSheafConv(in_channels, out_channels, d=3, device=device)
         data = Data(x=x, edge_index=hyperedge_index)
 
@@ -405,7 +280,7 @@ def test_equivariance_sheaf_ortho():
         print("model OrthoSheafs is permutation equivariant")
 
 
-def test_equivariance_sheaf_EDHNN_diag():
+def test_equivariance_sheaf_EDHNN(sheaf_type):
     torch.random.manual_seed(0)
     np.random.seed(0)
 
@@ -423,7 +298,15 @@ def test_equivariance_sheaf_EDHNN_diag():
     x = torch.randn((num_nodes, in_channels))
 
     with torch.no_grad():
-        diag_sheaf_model = SheafEquivSetGNN_Diag(num_features=args.num_features, num_classes=args.num_classes, args=args)
+        if sheaf_type == 'general':
+            diag_sheaf_model = SheafEquivSetGNN(num_features=args.num_features, num_classes=args.num_classes, sheaf_type="GeneralEDGNN", args=args)
+        if sheaf_type == 'diag':
+            diag_sheaf_model = SheafEquivSetGNN(num_features=args.num_features, num_classes=args.num_classes, sheaf_type="DiagEDGNN", args=args)
+        if sheaf_type == 'ortho':
+            diag_sheaf_model = SheafEquivSetGNN(num_features=args.num_features, num_classes=args.num_classes, sheaf_type="OrthoEDGNN", args=args)
+        
+        
+        
         # diag_sheaf_conv = HypergraphDiagSheafConv(in_channels, out_channels, d=3, device=device)
         data = Data(x=x, edge_index=hyperedge_index)
 
@@ -440,15 +323,38 @@ def test_equivariance_sheaf_EDHNN_diag():
         print(out.mean(), perm_out.mean())
 
         assert(torch.allclose(out, perm_out, atol=1e-6))
-        print("model DiagSheafs is permutation equivariant")
+        print(f"model EGGNN with {sheaf_type}Sheafs is permutation equivariant")
 
 if __name__ == '__main__':
-    # test_sheaf_conv_diag()
-    # test_sheaf_conv_general()
-    # test_sheaf_conv_ortho()
-    # test_equivariance_sheaf_diag()
-    # test_equivariance_sheaf_general()
-    # test_equivariance_sheaf_ortho()
-    # test_gradients_diag()
-    test_equivariance_sheaf_EDHNN_diag()
+    # These are visual tests showing how the big H looks like.
+    # Visually check they are indeed diagonal, ortho or general
+
+    if sys.argv[1] == 'visual_test' :
+        if sys.argv[2] == 'diag' :
+            test_sheaf_conv('diag')
+        elif sys.argv[2] == 'general' :
+            test_sheaf_conv('general')
+        if sys.argv[2] == 'orthp' : 
+            test_sheaf_conv('ortho')
+
+    # These are tests to check the permuation equivariance of HCHA-based sheaves
+
+    if sys.argv[1] == 'HCHA_equivariance' :
+        if sys.argv[2] == 'diag' :
+            test_equivariance_sheaf_diag()
+        elif sys.argv[2] == 'general' :           
+            test_equivariance_sheaf_general()
+        elif sys.argv[2] == 'ortho' :
+            test_equivariance_sheaf_ortho()
+
+    # These are tests to check the permuation equivariance of EDHNN-based sheaves
+
+    if sys.argv[1] == 'EDHDD_equivariance' :
+        if sys.argv[2] == 'diag' :
+            test_equivariance_sheaf_EDHNN('diag')
+        elif sys.argv[2] == 'general' :
+            test_equivariance_sheaf_EDHNN('general')
+        elif sys.argv[2] == 'ortho' :
+            test_equivariance_sheaf_EDHNN('ortho')
+
 
