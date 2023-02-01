@@ -3,17 +3,31 @@
  --tag argument is used just to append a tag in wandb which might help you select the experiments later.
  I am using  --tag testing for dev experiments and  --tag stable for more stable results
 
+## Examples of scripts to run:
+For training HCHA-based sheaves: run_hcha_sheaf.sh
+
+For unit testing the models: run_unit_tests.sh
+
+For training EDNN-based sheaves: run_edgnn_sheaf.sh
+
 
 ## The main classes of the code used for sheaf-based models:
 
 `models.HyperSheafs(args, sheaf_type)` -- contains sheaf-based HCHA model  
 
-`sheaf_builder.SheafBuilder*(args)` -- generate the sheaf reduction map (H \in nd x nd) Diag/General or Ortho 
+`sheaf_builder.SheafBuilderDiag(args)`, `sheaf_builder.SheafBuilderOrtho(args)`, `sheaf_builder.SheafBuilderGeneral(args)` -- generate the sheaf reduction map (H \in nd x nd) Diag/General or Ortho 
 
 `sheaf_builder.predict_blocks_*()` -- the model predicting d, d*(d-1)//2 or d^2 parameters used to build the reduction map: Transformer, mlp_var1 or mlp_var2 
 
-`layers.HypergraphDiagSheafConv(...)` -- convolutional propagation for sheaf. Mainly same as before, with laplacian normalisation slightly change \\
+`layers.HypergraphDiagSheafConv(...)`, `layers.HypergraphGeneralSheafConv(...)`, `layers.HypergraphOrthoSheafConv(...)` -- convolutional propagation for sheaf. Mainly same as before, with laplacian normalisation slightly change \\
 
+`edgnn.SheafEquivSetGNN(... sheaf_type ..)` -- contains sheaf-based EDGNN model  
+
+E.g. To create a HCHA-sheaf-based model with diagonal sheaf run:
+
+```
+model = HyperSheafs(args, 'DiagSheafs')
+```
 
 
 ## Hyperparameters to tune:
@@ -27,7 +41,7 @@
 
 Obs: GeneralSheafs does not work with block_norm yet
 
-**—sheaf_act**: sigmoid, tanh, none          # activation used on top of the dxd block
+**—sheaf_act**: sigmoid, tanh, none          # activation used on top of the dxd block; sigmoid tends to work way better
 
 **—sheaf_dropout:** True or Dalse         # dropout p on top of the dxd block. if True inherit p value from —dropout
 
