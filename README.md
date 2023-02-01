@@ -1,50 +1,53 @@
 # AllSet
 
-## Run Hypergraph Sheaf experiments
  --tag argument is used just to append a tag in wandb which might help you select the experiments later.
  I am using  --tag testing for dev experiments and  --tag stable for more stable results
- 
-For Diagonal Hypergraph Sheaves:
+
+## Examples of scripts to run:
+For training HCHA-based sheaves: run_hcha_sheaf.sh
+
+For unit testing the models: run_unit_tests.sh
+
+For training EDNN-based sheaves: run_edgnn_sheaf.sh
+
+
+## The main classes of the code used for sheaf-based models:
+
+`models.HyperSheafs(args, sheaf_type)` -- contains sheaf-based HCHA model  
+
+`sheaf_builder.SheafBuilderDiag(args)`, `sheaf_builder.SheafBuilderOrtho(args)`, `sheaf_builder.SheafBuilderGeneral(args)` -- generate the sheaf reduction map (H \in nd x nd) Diag/General or Ortho 
+
+`sheaf_builder.predict_blocks_*()` -- the model predicting d, d*(d-1)//2 or d^2 parameters used to build the reduction map: Transformer, mlp_var1 or mlp_var2 
+
+`layers.HypergraphDiagSheafConv(...)`, `layers.HypergraphGeneralSheafConv(...)`, `layers.HypergraphOrthoSheafConv(...)` -- convolutional propagation for sheaf. Mainly same as before, with laplacian normalisation slightly change \\
+
+`edgnn.SheafEquivSetGNN(... sheaf_type ..)` -- contains sheaf-based EDGNN model  
+
+E.g. To create a HCHA-sheaf-based model with diagonal sheaf run:
 
 ```
-CUDA_VISIBLE_DEVICES=0 python train.py --dname cora --method DiagSheafs --MLP_hidden 256 --Classifier_hidden 256 --All_num_layers 2 --heads 5 --init_hedge avg --epochs 100 --sheaf_normtype block_norm --runs 20
+model = HyperSheafs(args, 'DiagSheafs')
 ```
 
-For Orthogonal Hypergraph Sheaves:
-
-```
-CUDA_VISIBLE_DEVICES=0 python train.py --dname cora --method OrthoSheafs --MLP_hidden 256 --Classifier_hidden 256 --All_num_layers 2 --heads 5 --init_hedge avg --epochs 100 --sheaf_normtype degree_norm --runs 20
-```
-
-For General Hypergraph Sheaves:
-
-```
-CUDA_VISIBLE_DEVICES=0 python train.py --dname cora --method GeneralSheafs --MLP_hidden 256 --Classifier_hidden 256 --All_num_layers 2 --heads 5 --init_hedge avg --epochs 100 --sheaf_normtype degree_norm --runs 20
-```
-
-For unit tests on the code please run:
-```
-CUDA_VISIBLE_DEVICES="" python test_sheaf_conv.py
-```
 
 ## Hyperparameters to tune:
-**—method:** DiagSheafs, OrthoSheafs, GeneralSheafs           # vary the constrans on the dxd block
+🔆 **—method:** DiagSheafs, OrthoSheafs, GeneralSheafs, SheafEquivSetGNN_Diag, SheafEquivSetGNN_Ortho, SheafEquivSetGNN_General           # vary the constrans on the dxd block on top of HCHA or EquivSetGNN 
 
 **—heads:** int (usually 1-6)          # for the sheaf methods this confusingly refers to the dim of the stalk
 
-**—sheaf_pred_block:** MLP_var1, MLP_var2, transformer          # the encoder that pred (node, hedge) → dxd block
+🔆 **—sheaf_pred_block:** MLP_var1, MLP_var2, transformer          # the encoder that pred (node, hedge) → dxd block
 
-**—sheaf_normtype:** degree_norm, block_norm;           #type of normalisation hnn-like or sheaf-like
+🔆 **—sheaf_normtype:** degree_norm, block_norm;           #type of normalisation hnn-like or sheaf-like
 
 Obs: GeneralSheafs does not work with block_norm yet
 
-**—sheaf_act**: sigmoid, tanh, none          # activation used on top of the dxd block
+**—sheaf_act**: sigmoid, tanh, none          # activation used on top of the dxd block; sigmoid tends to work way better
 
 **—sheaf_dropout:** True or Dalse         # dropout p on top of the dxd block. if True inherit p value from —dropout
 
 **—sheaf_left_proj:** True or False          # use [(IxW1) X W2] or [X W2] inside the model 
 
-**—dynamic_sheaf:** True or False          # predict the sheaf every layer or just in the first layer
+🔆 **—dynamic_sheaf:** True or False          # predict the sheaf every layer or just in the first layer
 
 **—sheaf_special_head:** True or False          # append a, extra dimension =1 for each (node, hedge)
 
@@ -65,6 +68,8 @@ Obs: only when sheaf_pred_block==transformer
 **—add_self_loop**          # addor not self loop
 
 **—dropout**
+
+🔆 **--AllSet_input_norm**.     # True or False to indicate if we are usinf layernorm before linear projections. Recomand True 
 
 are there others?
 
