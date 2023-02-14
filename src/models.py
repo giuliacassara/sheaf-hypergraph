@@ -30,10 +30,12 @@ import pdb
 from orthogonal import Orthogonal
 import torch_geometric
 import itertools
+import time
+from utils import print_a_colored_ndarray
 
-from sheaf_builder import SheafBuilderDiag, SheafBuilderOrtho, SheafBuilderGeneral
+from sheaf_builder import SheafBuilderDiag, SheafBuilderOrtho, SheafBuilderGeneral, HGCNSheafBuilderDiag, HGCNSheafBuilderGeneral, HGCNSheafBuilderOrtho
 #  This part is for HyperGCN
-
+from hgcn_sheaf_laplacians import *
 
 class HyperGCN(nn.Module):
     def __init__(self, V, E, X, num_features, num_layers, num_classses, args):
@@ -82,9 +84,172 @@ class HyperGCN(nn.Module):
             if i < l - 1:
                 V = H
                 H = F.dropout(H, do, training=self.training)
-
+        
         return H
 
+class SheafHyperGCN(nn.Module):
+    # replace hyperedge with edges amax(F_v<e(x_v)) ~ amin(F_v<e(x_v))
+    def __init__(self, V, num_features, num_layers, num_classses, args, sheaf_type):
+        """
+        d: initial node-feature dimension
+        h: number of hidden units
+        c: number of classes
+        """
+        super(SheafHyperGCN, self).__init__()
+        d, l, c = num_features, num_layers, num_classses
+        cuda = args.cuda  # and torch.cuda.is_available()
+
+        self.num_nodes = V
+        h = [args.MLP_hidden]
+        for i in range(l-1):
+            power = l - i + 2
+            if args.dname == 'citeseer':
+                power = l - i + 4
+            h.append(2**power)
+        h.append(c)
+
+        reapproximate = False # for HyperGCN we take care of this via dynamic_sheaf
+
+        self.MLP_hidden = args.MLP_hidden
+        self.d = args.heads
+
+        self.num_layers = args.All_num_layers
+        self.dropout = args.dropout  # Note that default is 0.6
+        self.num_features = args.num_features
+        self.MLP_hidden = args.MLP_hidden 
+        self.d = args.heads # dimension of the stalks
+        self.init_hedge = args.init_hedge # how to initialise hyperedge attributes: avg or rand
+        self.norm_type = args.sheaf_normtype #type of laplacian normalisation degree_norm or block_norm
+        self.act = args.sheaf_act # type of nonlinearity used when predicting the dxd blocks
+        self.left_proj = args.sheaf_left_proj
+        self.args = args
+        self.norm = args.AllSet_input_norm
+
+        self.hyperedge_attr = None
+        self.dynamic_sheaf = args.dynamic_sheaf
+
+        # sheaf_type = 'OrthoSheafs'
+        if sheaf_type == 'DiagSheafs':
+            ModelSheaf = HGCNSheafBuilderDiag
+            self.Laplacian = SheafLaplacianDiag
+        elif sheaf_type == 'OrthoSheafs':
+            ModelSheaf = HGCNSheafBuilderOrtho
+            self.Laplacian = SheafLaplacianOrtho
+        elif sheaf_type == 'GeneralSheafs':
+            ModelSheaf = HGCNSheafBuilderGeneral
+            self.Laplacian = SheafLaplacianGeneral
+
+
+        self.lin = MLP(in_channels=self.num_features, 
+                        hidden_channels=self.MLP_hidden,
+                        out_channels=self.MLP_hidden*self.d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=False)
+
+        self.sheaf_builder = nn.ModuleList()
+        self.sheaf_builder.append(ModelSheaf(args, args.MLP_hidden))
+
+        self.lin2 = Linear(h[-1]*self.d, args.num_classes, bias=False)
+
+        if self.dynamic_sheaf:
+            for i in range(1,l):
+                    self.sheaf_builder.append(ModelSheaf(args, h[i]))
+
+        self.layers = nn.ModuleList([utils.HyperGraphConvolution(
+            h[i], h[i+1], reapproximate, cuda) for i in range(l)])
+        self.do, self.l = args.dropout, num_layers
+        self.m = args.HyperGCN_mediators
+
+    def reset_parameters(self):
+        for layer in self.layers:
+            layer.reset_parameters()
+        self.lin.reset_parameters()
+        self.lin2.reset_parameters()
+        for sheaf_builder in self.sheaf_builder:
+            sheaf_builder.reset_parameters()
+
+    def init_hyperedge_attr(self, type, num_edges=None, x=None, hyperedge_index=None):
+        #initialize hyperedge attributes either random or as the average of the nodes
+        if type == 'rand':
+            hyperedge_attr = torch.randn((num_edges, self.num_features)).to(self.device)
+        elif type == 'avg':
+            hyperedge_attr = scatter_mean(x[hyperedge_index[0]],hyperedge_index[1], dim=0)
+        else:
+            hyperedge_attr = None
+        return hyperedge_attr
+
+    def normalise(self, A, hyperedge_index, num_nodes, d):
+        if self.args.sheaf_normtype == 'degree_norm':
+            D = scatter_add(hyperedge_index.new_ones(hyperedge_index.size(1)), hyperedge_index[0], dim=0, dim_size=num_nodes*d) 
+            D = torch.pow(D, -0.5)
+            D[D == float("inf")] = 0
+            D = torch.diag(D).to_sparse()
+            A = torch.sparse.mm(D, A) # this is laplacian delta
+            A = torch.sparse.mm(A, D) # this is laplacian delta
+
+        # #TODO: check this. seems buggy
+        # elif self.args.sheaf_normtype == 'block_norm':
+        #     #normalise using diag(A) and diag(HTH) 
+        #     # this way of computing the normalisation tensor is ONLY valid for diagonal sheaf
+        #     D = A * torch.eye(A.shape[0]).to(A.device)
+        #     D = D.to_dense().diagonal()
+        #     D = torch.pow(D, -0.5) #can compute inverse like this because the matrix is diagonal
+        #     D = torch.nan_to_num(D, nan=0.0, posinf=0, neginf=0)
+
+        #     D = torch.diag(D).to_sparse()
+        #     A = torch.sparse.mm(D, A) # this is laplacian delta
+        #     A = torch.sparse.mm(A, D) # this is laplacian delta
+            
+        return A
+
+    def forward(self, data):
+        """
+        an l-layer GCN
+        """
+        do, l, m = self.do, self.l, self.m
+        H = data.x
+
+        num_nodes = data.edge_index[0].max().item() + 1
+        num_edges = data.edge_index[1].max().item() + 1
+
+        edge_index= data.edge_index
+
+        if self.hyperedge_attr is None:
+            self.hyperedge_attr = self.init_hyperedge_attr(self.init_hedge, num_edges=num_edges, x=H, hyperedge_index=edge_index)
+        
+
+        H = self.lin(H)
+        hyperedge_attr = self.lin(self.hyperedge_attr)
+
+        H = H.view((H.shape[0]*self.d, self.MLP_hidden)) # (N * d) x num_features
+        hyperedge_attr = hyperedge_attr.view((hyperedge_attr.shape[0]*self.d, self.MLP_hidden))
+
+        for i, hidden in enumerate(self.layers):
+            if i == 0 or self.dynamic_sheaf:
+                # compute the sheaf
+                sheaf = self.sheaf_builder[i](H, hyperedge_attr, edge_index) # N x E x d x d
+
+                # build the laplacian based on edges amax(F_v<e(x_v)) ~ amin(F_v<e(x_v))
+                # with nondiagonal terms -F_v<e(x_v)^T F_w<e(x_w)
+                # and diagonal terms \sum_e F_v<e(x_v)^T F_v<e(x_v)
+                h_sheaf_index, h_sheaf_attributes = self.Laplacian(H, m, self.d, edge_index, sheaf)
+        
+                A = torch.sparse.FloatTensor(h_sheaf_index, h_sheaf_attributes, (num_nodes*self.d,num_nodes*self.d))
+                A = A.coalesce()
+                A = self.normalise(A, h_sheaf_index, num_nodes, self.d)
+                A = torch.eye(num_nodes*self.d).to(A.device) - A # I - A
+
+            H = F.relu(hidden(A, H, m))
+            
+            if i < l - 1:
+                V = H
+                H = F.dropout(H, do, training=self.training)
+
+        H = H.view(self.num_nodes, -1) # Nd x out_channels -> Nx(d*out_channels)
+        H = self.lin2(H) # Nx(d*out_channels)-> N x num_classes
+        return H
 
 class CEGCN(MessagePassing):
     def __init__(self,
@@ -324,6 +489,7 @@ class HyperSheafs(nn.Module):
 
         for i, conv in enumerate(self.convs[:-1]):
             #infer the sheaf as a sparse incidence matrix Nd x Ed, with each block being diagonal
+            pdb.set_trace()
             if i == 0 or self.dynamic_sheaf:
                 h_sheaf_index, h_sheaf_attributes = self.sheaf_builder[i](x, hyperedge_attr, edge_index)
             x = F.elu(conv(x, hyperedge_index=h_sheaf_index, alpha=h_sheaf_attributes, num_nodes=num_nodes, num_edges=num_edges))

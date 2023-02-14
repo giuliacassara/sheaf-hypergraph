@@ -74,6 +74,33 @@ def parse_method(args, data):
                          num_classses=args.num_classes,
                          args=args
                          )
+    elif args.method == 'SheafHyperGCNDiag':
+        #         ipdb.set_trace()
+        He_dict = get_HyperGCN_He_dict(data)
+        model = SheafHyperGCN(V=data.x.shape[0],
+                         num_features=args.num_features,
+                         num_layers=args.All_num_layers,
+                         num_classses=args.num_classes,
+                         args=args, sheaf_type= 'DiagSheafs'
+                         )
+    elif args.method == 'SheafHyperGCNOrtho':
+        #         ipdb.set_trace()
+        He_dict = get_HyperGCN_He_dict(data)
+        model = SheafHyperGCN(V=data.x.shape[0],
+                         num_features=args.num_features,
+                         num_layers=args.All_num_layers,
+                         num_classses=args.num_classes,
+                         args=args, sheaf_type= 'OrthoSheafs'
+                         )
+    elif args.method == 'SheafHyperGCNGeneral':
+        #         ipdb.set_trace()
+        He_dict = get_HyperGCN_He_dict(data)
+        model = SheafHyperGCN(V=data.x.shape[0],
+                         num_features=args.num_features,
+                         num_layers=args.All_num_layers,
+                         num_classses=args.num_classes,
+                         args=args, sheaf_type= 'GeneralSheafs'
+                         )
 
     elif args.method == 'HGNN':
         # model = HGNN(in_ch=args.num_features,
@@ -274,7 +301,7 @@ if __name__ == '__main__':
     parser.add_argument('--PMA', action='store_true')
     #     Args for HyperGCN
     parser.add_argument('--HyperGCN_mediators', action='store_true')
-    parser.add_argument('--HyperGCN_fast', action='store_true')
+    parser.add_argument('--HyperGCN_fast', action='store_false')
     #     Args for Attentions: GAT and SetGNN
     parser.add_argument('--heads', default=1, type=int)  # Placeholder
     parser.add_argument('--output_heads', default=1, type=int)  # Placeholder
@@ -412,7 +439,12 @@ if __name__ == '__main__':
     
     elif args.method in ['HyperGCN']:
         data = ExtractV2E(data)
-    
+
+    elif args.method in ['SheafHyperGCNDiag','SheafHyperGCNOrtho','SheafHyperGCNGeneral']:
+        data = ExtractV2E(data)
+    #    Make the first he_id to be 0
+        data.edge_index[1] -= data.edge_index[1].min()
+
     elif args.method in ['HNHN']:
         data = ExtractV2E(data)
         if args.add_self_loop:

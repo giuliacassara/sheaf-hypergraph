@@ -7,6 +7,8 @@ from torch.nn.modules.module import Module
 from torch.nn.parameter import Parameter
 
 import numpy as np
+import itertools
+import time
 
 
 
@@ -18,7 +20,7 @@ class HyperGraphConvolution(Module):
     def __init__(self, a, b, reapproximate=True, cuda=None):
         super(HyperGraphConvolution, self).__init__()
         self.a, self.b = a, b
-        self.reapproximate, self.device = reapproximate, torch.device('cuda:'+str(cuda))
+        self.reapproximate = reapproximate
 
         self.W = Parameter(torch.FloatTensor(a, b))
         self.bias = Parameter(torch.FloatTensor(b))
@@ -40,12 +42,16 @@ class HyperGraphConvolution(Module):
 
         if self.reapproximate:
             n, X = H.shape[0], HW.cpu().detach().numpy()
+            time1 =time.time()
             A = Laplacian(n, structure, X, m)
+            time2 = time.time()
+            print(time2-time1)
         else: A = structure
 
-        A = A.to(self.device)
+        A = A.to(H.device)
         A = Variable(A)
 
+        # AHW = A @ HW
         AHW = SparseMM.apply(A, HW)     
         return AHW + b
 
@@ -55,7 +61,6 @@ class HyperGraphConvolution(Module):
         return self.__class__.__name__ + ' (' \
                + str(self.a) + ' -> ' \
                + str(self.b) + ')'
-
 
 
 class SparseMM(torch.autograd.Function):
@@ -102,8 +107,11 @@ def Laplacian(V, E, X, m):
     
     edges, weights = [], {}
     rv = np.random.rand(X.shape[1])
+    # print(rv.mean())
 
+    time1 = time.time()
     for k in E.keys():
+        time3a = time.time()
         hyperedge = list(E[k])
         
         p = np.dot(X[hyperedge], rv)   #projection onto a random vector rv
@@ -140,8 +148,11 @@ def Laplacian(V, E, X, m):
 
             if (Ie,Se) not in weights:
                 weights[(Ie,Se)] = 0
-            weights[(Ie,Se)] += float(1/e)    
-    
+            weights[(Ie,Se)] += float(1/e)   
+        time4a = time.time() 
+    time2=time.time()
+    print(time2-time1)
+
     return adjacency(edges, weights, V)
 
 

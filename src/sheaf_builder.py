@@ -79,6 +79,7 @@ class SheafBuilderDiag(nn.Module):
 
         """
 
+        pdb.set_trace()
         num_nodes = hyperedge_index[0].max().item() + 1
         num_edges = hyperedge_index[1].max().item() + 1
         x = x.view(num_nodes, self.d, x.shape[-1]).mean(1) # N x d x f -> N x f
@@ -415,8 +416,7 @@ def predict_blocks(x, e, hyperedge_index, sheaf_lin, args):
     es = torch.index_select(e, dim=0, index=col)
 
     h_sheaf = torch.cat((xs,es), dim=-1) #sparse version of an NxEx2f tensor
-    
-    
+
     h_sheaf = sheaf_lin(h_sheaf)  #sparse version of an NxExd tensor
     if args.sheaf_act == 'sigmoid':
         h_sheaf = F.sigmoid(h_sheaf) # output d numbers for every entry in the incidence matrix
@@ -516,3 +516,320 @@ def predict_blocks_transformer(x, hyperedge_index, transformer_layer, transforme
     elif args.sheaf_act == 'tanh':
         h_sheaf = F.tanh(h_sheaf) # output d numbers for every entry in the incidence matrix
     return h_sheaf
+
+
+
+class HGCNSheafBuilderDiag(nn.Module):
+    def __init__(self, args, hidden_dim):
+        """
+        hidden_dim overwrite the args.MLP_hidden used in the normal sheaf HNN
+        """
+        super(HGCNSheafBuilderDiag, self).__init__()
+        self.args = args
+        self.prediction_type = args.sheaf_pred_block
+        self.sheaf_dropout = args.sheaf_dropout
+        self.special_head = args.sheaf_special_head
+        self.d = args.heads
+        self.MLP_hidden = hidden_dim
+        self.norm = args.AllSet_input_norm
+
+        if self.prediction_type == 'transformer':
+            transformer_head = args.sheaf_transformer_head
+            self.transformer_layer=torch_geometric.nn.TransformerConv(
+                                in_channels=self.MLP_hidden, 
+                                out_channels=self.MLP_hidden//transformer_head,
+                                heads=transformer_head)
+                                
+            self.transformer_lin_layer = MLP(
+                        in_channels=2*self.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+                        
+        elif self.prediction_type == 'MLP_var1':
+            self.sheaf_lin = MLP(
+                        in_channels=self.MLP_hidden + args.MLP_hidden,  
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+        elif self.prediction_type in ['MLP_var2', 'MLP_var3']:
+            self.sheaf_lin = MLP(
+                        in_channels=2*self.MLP_hidden,  
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+        if self.prediction_type == 'MLP_var3':
+            self.sheaf_lin2 = MLP(
+                        in_channels=self.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+                        
+
+    def reset_parameters(self):
+        if self.prediction_type == 'transformer':
+            self.transformer_lin_layer.reset_parameters()
+            self.transformer_layer.reset_parameters()
+        elif self.prediction_type == 'MLP_var3':
+            self.sheaf_lin.reset_parameters()
+            self.sheaf_lin2.reset_parameters()
+        else:
+            self.sheaf_lin.reset_parameters()
+        
+
+    #this is exclusively for diagonal sheaf
+    def forward(self, x, e, hyperedge_index):
+        """ tmp
+        x: Nd x f -> N x f
+        e: Ed x f -> E x f
+        -> (concat) N x E x (d+1)F -> (linear project) N x E x d (the elements on the diagonal of each dxd block)
+        -> (reshape) (Nd x Ed) with NxE diagonal blocks of dimension dxd
+
+        """
+
+        num_nodes = hyperedge_index[0].max().item() + 1
+        num_edges = hyperedge_index[1].max().item() + 1
+        x = x.view(num_nodes, self.d, x.shape[-1]).mean(1) # N x d x f -> N x f
+        e = e.view(num_edges, self.d, e.shape[-1]).mean(1) # # x d x f -> E x f
+
+        # h_sheaf = self.predict_blocks(x, e, hyperedge_index, sheaf_lin)
+        # h_sheaf = self.predict_blocks_var2(x, hyperedge_index, sheaf_lin)
+        if self.prediction_type == 'transformer':
+            h_sheaf = predict_blocks_transformer(x, hyperedge_index, self.transformer_layer, self.transformer_lin_layer, self.args)
+        elif self.prediction_type == 'MLP_var1':
+            h_sheaf = predict_blocks(x, e, hyperedge_index, self.sheaf_lin, self.args)
+        elif self.prediction_type == 'MLP_var2':
+            h_sheaf = predict_blocks_var2(x, hyperedge_index, self.sheaf_lin, self.args)
+        elif self.prediction_type == 'MLP_var3':
+            h_sheaf = predict_blocks_var3(x, hyperedge_index, self.sheaf_lin,  self.sheaf_lin2, self.args)
+
+        if self.sheaf_dropout:
+            h_sheaf = F.dropout(h_sheaf, p=self.dropout, training=self.training)
+        #add a head having just 1 on the diagonal. this should be similar to the normal hypergraph conv
+        if self.special_head:
+            new_head_mask = [1]*(self.d-1) + [0]
+            new_head = [0]*(self.d-1) + [1]
+            h_sheaf = h_sheaf * torch.tensor(new_head_mask, device=x.device) + torch.tensor(new_head, device=x.device)
+        
+        # h_sheaf = torch.diag_embed(h_sheaf, dim1=-2, dim2=-1)
+        return h_sheaf
+        # self.h_sheaf = h_sheaf #this is stored in self for testing purpose
+
+class HGCNSheafBuilderGeneral(nn.Module):
+    def __init__(self, args, hidden_dim):
+        super(HGCNSheafBuilderGeneral, self).__init__()
+        self.args = args
+        self.prediction_type = args.sheaf_pred_block
+        self.sheaf_dropout = args.sheaf_dropout
+        self.special_head = args.sheaf_special_head
+        self.d = args.heads
+        self.MLP_hidden = hidden_dim
+        self.norm = args.AllSet_input_norm
+
+        
+        if self.prediction_type == 'transformer':
+            transformer_head = args.sheaf_transformer_head
+            self.transformer_layer=torch_geometric.nn.TransformerConv(
+                                in_channels=self.MLP_hidden, 
+                                out_channels=self.MLP_hidden//transformer_head,
+                                heads=transformer_head)
+                                
+            self.transformer_lin_layer = MLP(
+                        in_channels=2*self.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.d*self.d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+                        
+        elif self.prediction_type == 'MLP_var1':
+            self.sheaf_lin = MLP(
+                        in_channels=self.MLP_hidden + args.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.d*self.d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+        elif self.prediction_type in ['MLP_var2', 'MLP_var3']:
+            self.sheaf_lin = MLP(
+                        in_channels=2*self.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.d*self.d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+        if self.prediction_type == 'MLP_var3':
+            self.sheaf_lin2 = MLP(
+                        in_channels=self.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+                        
+
+    def reset_parameters(self):
+        if self.prediction_type == 'transformer':
+            self.transformer_lin_layer.reset_parameters()
+            self.transformer_layer.reset_parameters()
+        elif self.prediction_type == 'MLP_var3':
+            self.sheaf_lin.reset_parameters()
+            self.sheaf_lin2.reset_parameters()
+        else:
+            self.sheaf_lin.reset_parameters()
+        
+
+    #this is exclusively for diagonal sheaf
+    def forward(self, x, e, hyperedge_index):
+        """ tmp
+        x: Nd x f -> N x f
+        e: Ed x f -> E x f
+        -> (concat) N x E x (d+1)F -> (linear project) N x E x d (the elements on the diagonal of each dxd block)
+        -> (reshape) (Nd x Ed) with NxE diagonal blocks of dimension dxd
+
+        """
+
+        num_nodes = hyperedge_index[0].max().item() + 1
+        num_edges = hyperedge_index[1].max().item() + 1
+        x = x.view(num_nodes, self.d, x.shape[-1]).mean(1) # N x d x f -> N x f
+        e = e.view(num_edges, self.d, e.shape[-1]).mean(1) # # x d x f -> E x f
+
+        # h_sheaf = self.predict_blocks(x, e, hyperedge_index, sheaf_lin)
+        # h_sheaf = self.predict_blocks_var2(x, hyperedge_index, sheaf_lin)
+        if self.prediction_type == 'transformer':
+            h_sheaf = predict_blocks_transformer(x, hyperedge_index, self.transformer_layer, self.transformer_lin_layer, self.args)
+        elif self.prediction_type == 'MLP_var1':
+            h_sheaf = predict_blocks(x, e, hyperedge_index, self.sheaf_lin, self.args)
+        elif self.prediction_type == 'MLP_var2':
+            h_sheaf = predict_blocks_var2(x, hyperedge_index, self.sheaf_lin, self.args)
+        elif self.prediction_type == 'MLP_var3':
+            h_sheaf = predict_blocks_var3(x, hyperedge_index, self.sheaf_lin,  self.sheaf_lin2, self.args)
+
+        if self.sheaf_dropout:
+            h_sheaf = F.dropout(h_sheaf, p=self.dropout, training=self.training)
+        #add a head having just 1 on the diagonal. this should be similar to the normal hypergraph conv
+        
+        # h_sheaf = torch.diag_embed(h_sheaf, dim1=-2, dim2=-1)
+        return h_sheaf
+        # self.h_sheaf = h_sheaf #this is stored in self for testing purpose
+
+
+class HGCNSheafBuilderOrtho(nn.Module):
+    def __init__(self, args, hidden_dim):
+        super(HGCNSheafBuilderOrtho, self).__init__()
+        self.args = args
+        self.prediction_type = args.sheaf_pred_block
+        self.sheaf_dropout = args.sheaf_dropout
+        self.special_head = args.sheaf_special_head
+        self.d = args.heads
+        self.MLP_hidden = hidden_dim
+        self.norm = args.AllSet_input_norm
+
+        self.orth_transform = Orthogonal(d=self.d, orthogonal_map='householder') #method applied to transform params into ortho dxd matrix
+        
+        if self.prediction_type == 'transformer':
+            transformer_head = args.sheaf_transformer_head
+            self.transformer_layer=torch_geometric.nn.TransformerConv(
+                                in_channels=self.MLP_hidden, 
+                                out_channels=self.MLP_hidden//transformer_head,
+                                heads=transformer_head)
+                                
+            self.transformer_lin_layer = MLP(
+                        in_channels=2*self.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.d*(self.d-1)//2,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+                        
+        elif self.prediction_type == 'MLP_var1':
+            self.sheaf_lin = MLP(
+                        in_channels=self.MLP_hidden + args.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.d*(self.d-1)//2,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+        elif self.prediction_type in ['MLP_var2', 'MLP_var3']:
+            self.sheaf_lin = MLP(
+                        in_channels=2*self.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.d*(self.d-1)//2,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+        if self.prediction_type == 'MLP_var3':
+            self.sheaf_lin2 = MLP(
+                        in_channels=self.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+                        
+
+    def reset_parameters(self):
+        if self.prediction_type == 'transformer':
+            self.transformer_lin_layer.reset_parameters()
+            self.transformer_layer.reset_parameters()
+        elif self.prediction_type == 'MLP_var3':
+            self.sheaf_lin.reset_parameters()
+            self.sheaf_lin2.reset_parameters()
+        else:
+            self.sheaf_lin.reset_parameters()
+        
+
+    #this is exclusively for diagonal sheaf
+    def forward(self, x, e, hyperedge_index):
+        """ tmp
+        x: Nd x f -> N x f
+        e: Ed x f -> E x f
+        -> (concat) N x E x (d+1)F -> (linear project) N x E x d (the elements on the diagonal of each dxd block)
+        -> (reshape) (Nd x Ed) with NxE diagonal blocks of dimension dxd
+
+        """
+
+        num_nodes = hyperedge_index[0].max().item() + 1
+        num_edges = hyperedge_index[1].max().item() + 1
+        x = x.view(num_nodes, self.d, x.shape[-1]).mean(1) # N x d x f -> N x f
+        e = e.view(num_edges, self.d, e.shape[-1]).mean(1) # # x d x f -> E x f
+
+        # h_sheaf = self.predict_blocks(x, e, hyperedge_index, sheaf_lin)
+        # h_sheaf = self.predict_blocks_var2(x, hyperedge_index, sheaf_lin)
+        if self.prediction_type == 'transformer':
+            h_sheaf = predict_blocks_transformer(x, hyperedge_index, self.transformer_layer, self.transformer_lin_layer, self.args)
+        elif self.prediction_type == 'MLP_var1':
+            h_sheaf = predict_blocks(x, e, hyperedge_index, self.sheaf_lin, self.args)
+        elif self.prediction_type == 'MLP_var2':
+            h_sheaf = predict_blocks_var2(x, hyperedge_index, self.sheaf_lin, self.args)
+        elif self.prediction_type == 'MLP_var3':
+            h_sheaf = predict_blocks_var3(x, hyperedge_index, self.sheaf_lin,  self.sheaf_lin2, self.args)
+
+        h_sheaf = self.orth_transform(h_sheaf) #sparse version of a NxExdxd tensor
+        if self.sheaf_dropout:
+            h_sheaf = F.dropout(h_sheaf, p=self.dropout, training=self.training)
+        #add a head having just 1 on the diagonal. this should be similar to the normal hypergraph conv
+        
+        # h_sheaf = torch.diag_embed(h_sheaf, dim1=-2, dim2=-1)
+        return h_sheaf
+        # self.h_sheaf = h_sheaf #this is stored in self for testing purpose
