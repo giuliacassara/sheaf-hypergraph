@@ -101,6 +101,14 @@ def parse_method(args, data):
                          num_classses=args.num_classes,
                          args=args, sheaf_type= 'GeneralSheafs'
                          )
+    elif args.method == 'SheafHyperGCNLowRank':
+        #         ipdb.set_trace()
+        model = SheafHyperGCN(V=data.x.shape[0],
+                         num_features=args.num_features,
+                         num_layers=args.All_num_layers,
+                         num_classses=args.num_classes,
+                         args=args, sheaf_type= 'LowRankSheafs'
+                         )
 
     elif args.method == 'HGNN':
         # model = HGNN(in_ch=args.num_features,
@@ -118,7 +126,7 @@ def parse_method(args, data):
     elif args.method == 'MLP':
         model = MLP_model(args)
 
-    elif args.method in ['DiagSheafs', 'OrthoSheafs', 'GeneralSheafs']:
+    elif args.method in ['DiagSheafs', 'OrthoSheafs', 'GeneralSheafs', 'LowRankSheafs']:
         model = HyperSheafs(args, args.method)
 
     # elif args.method == 'OrthoSheafs':
@@ -133,6 +141,8 @@ def parse_method(args, data):
         model = SheafEquivSetGNN(num_features=args.num_features, num_classes=args.num_classes, sheaf_type='OrthoEDGNN', args=args)
     elif args.method == 'SheafEquivSetGNN_General':
         model = SheafEquivSetGNN(num_features=args.num_features, num_classes=args.num_classes, sheaf_type='GeneralEDGNN', args=args)
+    elif args.method == 'SheafEquivSetGNN_LowRank':
+        model = SheafEquivSetGNN(num_features=args.num_features, num_classes=args.num_classes, sheaf_type='LowRankEDGNN', args=args)
     return model
 
 
@@ -338,6 +348,9 @@ if __name__ == '__main__':
     parser.add_argument('--sheaf_transformer_head', type=int, default=1) #only when sheaf_pred_block==transformer. The number of transformer head used to predict the dxd blocks
     parser.add_argument('--AllSet_input_norm', default=True)
     
+    parser.add_argument('--rank', default=0, type=int, help='rank for dxd blocks in LowRankSheafs') # ronly for ank for the low-rank matrix generation of the dxd block                                                                                          # should be < d
+    parser.add_argument('--noisy_low_rank', default=False) #only for ank for the low-rank . tell us if we want to add some gaussian noise on the diagonal of the low-rank matrices
+
     parser.set_defaults(PMA=True)  # True: Use PMA. False: Use Deepsets.
     parser.set_defaults(add_self_loop=True)
     parser.set_defaults(exclude_self=False)
@@ -440,7 +453,7 @@ if __name__ == '__main__':
     elif args.method in ['HyperGCN']:
         data = ExtractV2E(data)
 
-    elif args.method in ['SheafHyperGCNDiag','SheafHyperGCNOrtho','SheafHyperGCNGeneral']:
+    elif args.method in ['SheafHyperGCNDiag','SheafHyperGCNOrtho','SheafHyperGCNGeneral', 'SheafHyperGCNLowRank']:
         data = ExtractV2E(data)
     #    Make the first he_id to be 0
         data.edge_index[1] -= data.edge_index[1].min()
@@ -453,7 +466,7 @@ if __name__ == '__main__':
         data = generate_norm_HNHN(H, data, args)
         data.edge_index[1] -= data.edge_index[1].min()
     
-    elif args.method in ['HCHA', 'HGNN', 'DiagSheafs','OrthoSheafs', 'GeneralSheafs', 'EquivSetGNN', 'SheafEquivSetGNN_Diag', 'SheafEquivSetGNN_Ortho', 'SheafEquivSetGNN_General']:
+    elif args.method in ['HCHA', 'HGNN', 'DiagSheafs','OrthoSheafs', 'GeneralSheafs', 'LowRankSheafs', 'EquivSetGNN', 'SheafEquivSetGNN_Diag', 'SheafEquivSetGNN_Ortho', 'SheafEquivSetGNN_General', 'SheafEquivSetGNN_LowRank']:
         data = ExtractV2E(data)
         if args.add_self_loop:
             data = Add_Self_Loops(data)

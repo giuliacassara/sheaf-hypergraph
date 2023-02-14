@@ -19,7 +19,7 @@ import pdb
 
 import  torch_geometric
 from models import MLP
-from sheaf_builder import SheafBuilderDiag, SheafBuilderOrtho, SheafBuilderGeneral
+from sheaf_builder import SheafBuilderDiag, SheafBuilderOrtho, SheafBuilderGeneral, SheafBuilderLowRank
 
 class EquivSetConv(nn.Module):
     def __init__(self, in_features, out_features, mlp1_layers=1, mlp2_layers=1,
@@ -337,6 +337,8 @@ class SheafEquivSetGNN(nn.Module):
             ModelSheaf = SheafBuilderOrtho
         elif sheaf_type == 'GeneralEDGNN':
             ModelSheaf = SheafBuilderGeneral
+        elif sheaf_type == 'LowRankEDGNN':
+            ModelSheaf = SheafBuilderLowRank
 
         self.sheaf_builder = nn.ModuleList()
         self.sheaf_builder.append(ModelSheaf(args))

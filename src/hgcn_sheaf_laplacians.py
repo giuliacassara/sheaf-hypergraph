@@ -88,7 +88,7 @@ def reduce_graph(X_reduced, m, d, edge_index):
 
         # two stars with mediators
         c = 2*len(hyperedge_pos) - 3    # normalisation constant
-        m= True
+ 
         if m:
             # connect the supremum (Se) with the infimum (Ie)
             edges.extend([[Se, Ie], [Ie, Se]])
@@ -268,7 +268,7 @@ def SheafLaplacianGeneral(H, m, d, edge_index, sheaf, E=None):
     F_source_diag = torch.index_select(F, dim=0, index=edges_idx_diag[0]) 
     F_dest_diag = torch.index_select(F, dim=0, index=edges_idx_diag[1])
     attributes_diag = torch.bmm(F_source_diag.transpose(1,2),F_dest_diag)
-    
+
     #for each selfloop (x,x) aggregate the reduction for all hyperedges that node is part of sum_e F_v<e(X_v)^T F_v<e(X_v)
     attributes_diag = scatter_add(attributes_diag, all_contained_hyperedges, dim=0)
     attributes = torch.concat([attributes, attributes_diag], axis=0)

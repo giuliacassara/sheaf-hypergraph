@@ -33,7 +33,7 @@ import itertools
 import time
 from utils import print_a_colored_ndarray
 
-from sheaf_builder import SheafBuilderDiag, SheafBuilderOrtho, SheafBuilderGeneral, HGCNSheafBuilderDiag, HGCNSheafBuilderGeneral, HGCNSheafBuilderOrtho
+from sheaf_builder import SheafBuilderDiag, SheafBuilderOrtho, SheafBuilderGeneral, HGCNSheafBuilderDiag, HGCNSheafBuilderGeneral, HGCNSheafBuilderOrtho, HGCNSheafBuilderLowRank, SheafBuilderLowRank
 #  This part is for HyperGCN
 from hgcn_sheaf_laplacians import *
 
@@ -138,7 +138,9 @@ class SheafHyperGCN(nn.Module):
         elif sheaf_type == 'GeneralSheafs':
             ModelSheaf = HGCNSheafBuilderGeneral
             self.Laplacian = SheafLaplacianGeneral
-
+        elif sheaf_type == 'LowRankSheafs':
+            ModelSheaf = HGCNSheafBuilderLowRank
+            self.Laplacian = SheafLaplacianGeneral
 
         self.lin = MLP(in_channels=self.num_features, 
                         hidden_channels=self.MLP_hidden,
@@ -427,6 +429,9 @@ class HyperSheafs(nn.Module):
         elif sheaf_type == 'GeneralSheafs':
             ModelSheaf = SheafBuilderGeneral
             ModelConv = HypergraphGeneralSheafConv
+        elif sheaf_type == 'LowRankSheafs':
+            ModelSheaf = SheafBuilderLowRank
+            ModelConv = HypergraphGeneralSheafConv
         
 #         Note that add dropout to attention is default in the original paper
         self.convs = nn.ModuleList()
@@ -489,7 +494,6 @@ class HyperSheafs(nn.Module):
 
         for i, conv in enumerate(self.convs[:-1]):
             #infer the sheaf as a sparse incidence matrix Nd x Ed, with each block being diagonal
-            pdb.set_trace()
             if i == 0 or self.dynamic_sheaf:
                 h_sheaf_index, h_sheaf_attributes = self.sheaf_builder[i](x, hyperedge_attr, edge_index)
             x = F.elu(conv(x, hyperedge_index=h_sheaf_index, alpha=h_sheaf_attributes, num_nodes=num_nodes, num_edges=num_edges))

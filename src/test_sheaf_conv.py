@@ -25,7 +25,7 @@ def get_test_config():
         'dropout': 0.0,
         'num_features': 16,
         'num_classes': 32,
-        'heads': 2,
+        'heads': 4,
         'sheaf_normtype': 'degree_norm',
         'sheaf_pred_block': 'transformer',
         'sheaf_transformer_head': 8,#MLP_hidden needs to divide this
@@ -47,7 +47,10 @@ def get_test_config():
         'Classifier_hidden': 256,
         'Classifier_num_layers': 2,
         'dname': 'custom',
-        'HyperGCN_mediators': True
+        'HyperGCN_mediators': True,
+
+        'rank': 2,
+        'noisy_low_rank': True
 
 
     }
@@ -148,6 +151,8 @@ def test_sheaf_conv(sheaf_type):
         sheaf_builder = SheafBuilderGeneral(args)
     elif sheaf_type == 'ortho':
         sheaf_builder = SheafBuilderOrtho(args)
+    elif sheaf_type == 'low_rank':
+        sheaf_builder = SheafBuilderLowRank(args)
 
     # diag_sheaf_conv = HypergraphDiagSheafConv(in_channels, out_channels, d=3, device=device)
 
@@ -246,6 +251,45 @@ def test_equivariance_sheaf_general():
         assert(torch.allclose(out, perm_out, atol=1e-5))
         print("model GeneralSheafs is permutation equivariant")
 
+def test_equivariance_sheaf_low_rank():
+    torch.random.manual_seed(0)
+    np.random.seed(0)
+
+    args = get_test_config()
+    in_channels = args['num_features']
+    out_channels = args['num_classes']
+    d = args['heads']
+    args = Namespace(**args)
+    print(args)
+
+
+    hyperedge_index = torch.tensor([[0, 0, 1, 1, 2, 3], [0, 1, 0, 1, 0, 1]])
+    num_nodes = hyperedge_index[0].max().item() + 1
+    num_edges = hyperedge_index[1].max().item() + 1
+    x = torch.randn((num_nodes, in_channels))
+
+    with torch.no_grad():
+        general_sheaf_model = HyperSheafs(args, 'LowRankSheafs')
+        # general_sheaf_model = GeneralSheafs(args)
+        # diag_sheaf_conv = HypergraphDiagSheafConv(in_channels, out_channels, d=3, device=device)
+        data = Data(x=x, edge_index=hyperedge_index)
+
+        P = generate_permutation_matrices(size=num_nodes, amount=1)[0]
+        perm_data = permute_hypergraph(data, P)
+
+        # this is just to test the sheaf prediction
+        # h_sheaf_index, h_sheaf_attributes = diag_sheaf_model.build_sheaf_incidence(x, hyperedge_attr, hyperedge_index, layer_idx=0, debug=False)
+
+        #this is to test the perm equiv of prediction, sheaf generation is inside anyway
+        out = general_sheaf_model(data)
+        out = torch.FloatTensor(P.astype(np.float64) @ out.numpy().astype(np.float64))
+        perm_out = general_sheaf_model(perm_data)
+
+
+        print(out.mean(), perm_out.mean())
+        print(torch.abs(out-perm_out).max())
+        assert(torch.allclose(out, perm_out, atol=1e-5))
+        print("model LowRankSheafs is permutation equivariant")
 
 def test_equivariance_sheaf_ortho():
     torch.random.manual_seed(0)
@@ -302,6 +346,8 @@ def test_equivariance_sheaf_hgcn(sheaf_type):
 
     data = Data(x=x, edge_index=hyperedge_index)
     He_dict = get_HyperGCN_He_dict(data)
+
+    # pdb.set_trace()
     with torch.no_grad():
 
         if sheaf_type == 'diag':
@@ -324,6 +370,13 @@ def test_equivariance_sheaf_hgcn(sheaf_type):
                          num_layers=args.All_num_layers,
                          num_classses=args.num_classes,
                          args=args, sheaf_type= 'GeneralSheafs'
+                         )
+        elif sheaf_type == 'low_rank':
+            hgcn_sheaf_model = SheafHyperGCN(V=num_nodes,
+                         num_features=args.num_features,
+                         num_layers=args.All_num_layers,
+                         num_classses=args.num_classes,
+                         args=args, sheaf_type= 'LowRankSheafs'
                          )
         # diag_sheaf_conv = HypergraphDiagSheafConv(in_channels, out_channels, d=3, device=device
 
@@ -372,6 +425,8 @@ def test_equivariance_sheaf_EDHNN(sheaf_type):
             diag_sheaf_model = SheafEquivSetGNN(num_features=args.num_features, num_classes=args.num_classes, sheaf_type="DiagEDGNN", args=args)
         if sheaf_type == 'ortho':
             diag_sheaf_model = SheafEquivSetGNN(num_features=args.num_features, num_classes=args.num_classes, sheaf_type="OrthoEDGNN", args=args)
+        if sheaf_type == 'low_rank':
+            diag_sheaf_model = SheafEquivSetGNN(num_features=args.num_features, num_classes=args.num_classes, sheaf_type="LowRankEDGNN", args=args)
         
         
         
@@ -448,6 +503,9 @@ if __name__ == '__main__':
     # These are visual tests showing how the big H looks like.
     # Visually check they are indeed diagonal, ortho or general
 
+    if sys.argv[2] == 'low_rank':
+        print("BE CAREFUL. If you have noise in the dxd block it's normal to break the equivariance") 
+
     if sys.argv[1] == 'visual_test' :
         if sys.argv[2] == 'diag' :
             test_sheaf_conv('diag')
@@ -455,6 +513,8 @@ if __name__ == '__main__':
             test_sheaf_conv('general')
         if sys.argv[2] == 'ortho' : 
             test_sheaf_conv('ortho')
+        if sys.argv[2] == 'low_rank' : 
+            test_sheaf_conv('low_rank')
         if sys.argv[2] == 'HGCN' : 
             test_sheaf_conv_hgcn('diag')
 
@@ -467,22 +527,18 @@ if __name__ == '__main__':
             test_equivariance_sheaf_general()
         elif sys.argv[2] == 'ortho' :
             test_equivariance_sheaf_ortho()
+        elif sys.argv[2] == 'low_rank' :
+            test_equivariance_sheaf_low_rank()
 
     # These are tests to check the permuation equivariance of EDHNN-based sheaves
 
     if sys.argv[1] == 'EDHDD_equivariance' :
-        if sys.argv[2] == 'diag' :
-            test_equivariance_sheaf_EDHNN('diag')
-        elif sys.argv[2] == 'general' :
-            test_equivariance_sheaf_EDHNN('general')
-        elif sys.argv[2] == 'ortho' :
-            test_equivariance_sheaf_EDHNN('ortho')
+        #sys.argv[2] in ['general', 'diag', 'ortho', 'low_rank']
+        test_equivariance_sheaf_EDHNN(sys.argv[2])
     if sys.argv[1] == 'HGCN_equivariance' :
-        if sys.argv[2] == 'diag' :
-            test_equivariance_sheaf_hgcn('diag')
-        elif sys.argv[2] == 'ortho' :
-            test_equivariance_sheaf_hgcn('ortho')
-        elif sys.argv[2] == 'general' :
-            test_equivariance_sheaf_hgcn('general')
+        #sys.argv[2] in ['general', 'diag', 'ortho', 'low_rank']
+        test_equivariance_sheaf_hgcn(sys.argv[2])
+
+        
 
 
