@@ -183,9 +183,17 @@ def SheafLaplacianDiag(H, m, d, edge_index, sheaf, E=None):
   
     sheaf = sheaf.unsqueeze(1).repeat(1,MLP_hidden,1,1).reshape(-1, d, d) # nnz f x d x d
     
-    X_reduced  = X_reduced.reshape(-1, d).unsqueeze(1) #nnz f x d
+    # X @ sheaf. however the correct multiplication should be sheaf @ X
+    # X_reduced  = X_reduced.reshape(-1, d).unsqueeze(1) #nnz f x d
+    # # TODO think if this is ok??
+    # X_reduced = torch.bmm(X_reduced, sheaf) # nnz f x d 
+    # X_reduced = X_reduced.reshape(-1, MLP_hidden , d) #nnz x f x d
+    # X_reduced = X_reduced.permute(0,2,1)  # nnz x d x f
+
+    #sheaf @ X
+    X_reduced  = X_reduced.reshape(-1, d).unsqueeze(-1) #nnz f x d x 1
     # TODO think if this is ok??
-    X_reduced = torch.bmm(X_reduced, sheaf) # nnz f x d
+    X_reduced = torch.bmm(sheaf, X_reduced) # nnz f x d  x 1
     X_reduced = X_reduced.reshape(-1, MLP_hidden , d) #nnz x f x d
     X_reduced = X_reduced.permute(0,2,1)  # nnz x d x f
 
@@ -247,8 +255,14 @@ def SheafLaplacianGeneral(H, m, d, edge_index, sheaf, E=None):
 
     sheaf = sheaf.view(sheaf.shape[0],d,d) #nnz x d x d
     sheaf = sheaf.unsqueeze(1).repeat(1,MLP_hidden,1,1).view(-1, d, d) # nnz f x d x d
-    X_reduced  = X_reduced.reshape(-1, d).unsqueeze(1) #nnz f x 1 x d 
-    X_reduced = torch.bmm(X_reduced, sheaf) #nnz fx 1 x d
+    
+    # X_reduced  = X_reduced.reshape(-1, d).unsqueeze(1) #nnz f x 1 x d 
+    # X_reduced = torch.bmm(X_reduced, sheaf) #nnz fx 1 x d
+    # X_reduced = X_reduced.reshape(-1, MLP_hidden , d) #nnz x f x d
+    # X_reduced = X_reduced.permute(0,2,1)  # nnz x d x f
+    
+    X_reduced  = X_reduced.reshape(-1, d).unsqueeze(-1) #nnz f x d x 1
+    X_reduced = torch.bmm(sheaf, X_reduced) # nnz f x d  x 1
     X_reduced = X_reduced.reshape(-1, MLP_hidden , d) #nnz x f x d
     X_reduced = X_reduced.permute(0,2,1)  # nnz x d x f
 
@@ -317,10 +331,15 @@ def SheafLaplacianOrtho(H, m, d, edge_index, sheaf, E=None):
 
     sheaf = sheaf.view(sheaf.shape[0],d,d) #nnz x d x d containinf all the projections for F_v<e
     sheaf = sheaf.unsqueeze(1).repeat(1,MLP_hidden,1,1).view(-1, d, d) # nnz x f x d x d
-    X_reduced  = X_reduced.reshape(-1, d).unsqueeze(1) #nnz f x 1 x d
-    X_reduced = torch.bmm(X_reduced, sheaf) #nnz f x 1 x d
+    
+    # X_reduced  = X_reduced.reshape(-1, d).unsqueeze(1) #nnz f x 1 x d
+    # X_reduced = torch.bmm(X_reduced, sheaf) #nnz f x 1 x d
+    # X_reduced = X_reduced.reshape(-1, MLP_hidden , d) #nnz x f x d
+    # X_reduced = X_reduced.permute(0,2,1) #nnz x d x f
+    X_reduced  = X_reduced.reshape(-1, d).unsqueeze(-1) #nnz f x d x 1
+    X_reduced = torch.bmm(sheaf, X_reduced) # nnz f x d  x 1
     X_reduced = X_reduced.reshape(-1, MLP_hidden , d) #nnz x f x d
-    X_reduced = X_reduced.permute(0,2,1) #nnz x d x f
+    X_reduced = X_reduced.permute(0,2,1)  # nnz x d x f
 
     #return edges_idx: idx in nnz array for edges for the graph assoc with the hyperedge 
     # edges_idx_diag: idx in the nnz array for edges corresp to the diagonal

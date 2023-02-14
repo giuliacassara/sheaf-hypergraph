@@ -471,16 +471,16 @@ def test_sheaf_conv_hgcn(sheaf_type):
 
 
     if sheaf_type == 'diag':
-        sheaf_builder = HGCNSheafBuilderDiag(args)
+        sheaf_builder = HGCNSheafBuilderDiag(args, hidden_dim=64)
         sheaf= sheaf_builder(data.x, hyperedge_attr, hyperedge_index)
         h_sheaf_index, h_sheaf_attributes = SheafLaplacianDiag(data.x, True, args.heads, hyperedge_index, sheaf, He_dict)
 
     elif sheaf_type == 'ortho':
-        sheaf_builder = HGCNSheafBuilderOrtho(args)
+        sheaf_builder = HGCNSheafBuilderOrtho(args, hidden_dim=64)
         sheaf= sheaf_builder(data.x, hyperedge_attr, hyperedge_index)
         h_sheaf_index, h_sheaf_attributes = SheafLaplacianOrtho(data.x, True, args.heads, hyperedge_index, sheaf, He_dict)
     elif sheaf_type == 'general':
-        sheaf_builder = HGCNSheafBuilderGeneral(args)
+        sheaf_builder = HGCNSheafBuilderGeneral(args, hidden_dim=64)
         sheaf= sheaf_builder(data.x, hyperedge_attr, hyperedge_index)
         h_sheaf_index, h_sheaf_attributes = SheafLaplacianGeneral(data.x, True, args.heads, hyperedge_index, sheaf, He_dict)
 
@@ -516,7 +516,7 @@ if __name__ == '__main__':
         if sys.argv[2] == 'low_rank' : 
             test_sheaf_conv('low_rank')
         if sys.argv[2] == 'HGCN' : 
-            test_sheaf_conv_hgcn('diag')
+            test_sheaf_conv_hgcn('general')
 
     # These are tests to check the permuation equivariance of HCHA-based sheaves
 
