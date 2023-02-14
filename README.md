@@ -15,6 +15,8 @@ For training EDNN-based sheaves: run_edgnn_sheaf.sh
 
 `models.HyperSheafs(args, sheaf_type)` -- contains sheaf-based HCHA model  
 
+`models.SheafHyperGCN(V, num_features, num_layers, num_classses, args, sheaf_type)` -- contains sheaf-based HGCN model  
+
 `sheaf_builder.SheafBuilderDiag(args)`, `sheaf_builder.SheafBuilderOrtho(args)`, `sheaf_builder.SheafBuilderGeneral(args)` -- generate the sheaf reduction map (H \in nd x nd) Diag/General or Ortho 
 
 `sheaf_builder.predict_blocks_*()` -- the model predicting d, d*(d-1)//2 or d^2 parameters used to build the reduction map: Transformer, mlp_var1 or mlp_var2 
@@ -22,6 +24,9 @@ For training EDNN-based sheaves: run_edgnn_sheaf.sh
 `layers.HypergraphDiagSheafConv(...)`, `layers.HypergraphGeneralSheafConv(...)`, `layers.HypergraphOrthoSheafConv(...)` -- convolutional propagation for sheaf. Mainly same as before, with laplacian normalisation slightly change \\
 
 `edgnn.SheafEquivSetGNN(... sheaf_type ..)` -- contains sheaf-based EDGNN model  
+
+`hgcn_sheaf_laplacians.SheafLaplacian*` -- builds sheaf laplacians corresponding to the amin-amax graph extracted from the hyeprgraph (with mediators)
+
 
 E.g. To create a HCHA-sheaf-based model with diagonal sheaf run:
 
@@ -31,7 +36,7 @@ model = HyperSheafs(args, 'DiagSheafs')
 
 
 ## Hyperparameters to tune:
-🔆 **—method:** DiagSheafs, OrthoSheafs, GeneralSheafs, SheafEquivSetGNN_Diag, SheafEquivSetGNN_Ortho, SheafEquivSetGNN_General           # vary the constrans on the dxd block on top of HCHA or EquivSetGNN 
+🔆 **—method:** DiagSheafs, OrthoSheafs, GeneralSheafs, SheafHyperGCNDiag, SheafHyperGCNOrtho, SheafHyperGCNGeneral, SheafEquivSetGNN_Diag, SheafEquivSetGNN_Ortho, SheafEquivSetGNN_General           # vary the constrans on the dxd block on top of HCHA, HGCN or EquivSetGNN 
 
 **—heads:** int (usually 1-6)          # for the sheaf methods this confusingly refers to the dim of the stalk
 
