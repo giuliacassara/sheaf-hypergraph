@@ -55,14 +55,20 @@ class EquivSetConv(nn.Module):
         if isinstance(self.W, MLP):
             self.W.reset_parameters()
 
-    def forward(self, X, vertex, edges, X0):
+    def forward(self, X, vertex, edges, X0, alpha):
         N = X.shape[-2]
 
         Xve = self.W1(X)[..., vertex, :] # [nnz, C]
+        if alpha is not None:
+            alpha = alpha.unsqueeze(-1)
+            Xve = Xve * alpha
+
         Xe = torch_scatter.scatter(Xve, edges, dim=-2, reduce=self.aggr) # [E, C], reduce is 'mean' here as default
         
         Xev = Xe[..., edges, :] # [nnz, C]
         Xev = self.W2(torch.cat([X[..., vertex, :], Xev], -1))
+        if alpha is not None:
+            Xev = Xev * alpha
         Xv = torch_scatter.scatter(Xev, vertex, dim=-2, reduce=self.aggr, dim_size=N) # [N, C]
 
         X = Xv
@@ -202,7 +208,7 @@ class EquivSetGNN(nn.Module):
         x0 = x
         for i in range(self.nlayer):
             x = self.dropout(x)
-            x = self.conv(x, V, E, x0)
+            x = self.conv(x, V, E, x0, None)
             x = self.act(x)
         x = self.dropout(x)
         x = self.classifier(x)
@@ -383,7 +389,7 @@ class SheafEquivSetGNN(nn.Module):
 
         for i in range(self.nlayer):
             x = self.dropout(x)
-            x = self.conv(x, h_sheaf_index[0], h_sheaf_index[1], x0)
+            x = self.conv(x, h_sheaf_index[0], h_sheaf_index[1], x0, h_sheaf_attributes)
             x = self.act(x)
 
         x = x.view(num_nodes, -1) # Nd x out_channels -> Nx(d*out_channels)

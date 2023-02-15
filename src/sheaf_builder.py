@@ -56,6 +56,23 @@ class SheafBuilderDiag(nn.Module):
                         dropout=0.0,
                         Normalization='ln',
                         InputNorm=self.norm)
+        if self.prediction_type == 'cp_decomp':
+            self.cp_W = MLP(
+                        in_channels=self.MLP_hidden+1, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=args.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+            self.cp_V = MLP(
+                        in_channels=args.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=args.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.MLP_hidden)
                         
 
     def reset_parameters(self):
@@ -65,6 +82,10 @@ class SheafBuilderDiag(nn.Module):
         elif self.prediction_type == 'MLP_var3':
             self.sheaf_lin.reset_parameters()
             self.sheaf_lin2.reset_parameters()
+        elif self.prediction_type == 'cp_decomp':
+            self.sheaf_lin.reset_parameters()
+            self.cp_W.reset_parameters()
+            self.cp_V.reset_parameters()
         else:
             self.sheaf_lin.reset_parameters()
         
@@ -79,7 +100,6 @@ class SheafBuilderDiag(nn.Module):
 
         """
 
-        pdb.set_trace()
         num_nodes = hyperedge_index[0].max().item() + 1
         num_edges = hyperedge_index[1].max().item() + 1
         x = x.view(num_nodes, self.d, x.shape[-1]).mean(1) # N x d x f -> N x f
@@ -95,7 +115,8 @@ class SheafBuilderDiag(nn.Module):
             h_sheaf = predict_blocks_var2(x, hyperedge_index, self.sheaf_lin, self.args)
         elif self.prediction_type == 'MLP_var3':
             h_sheaf = predict_blocks_var3(x, hyperedge_index, self.sheaf_lin,  self.sheaf_lin2, self.args)
-
+        elif self.prediction_type == 'cp_decomp':
+            h_sheaf = predict_blocks_cp_decomp(x, hyperedge_index, self.cp_W, self.cp_V, self.sheaf_lin, self.args)
         if self.sheaf_dropout:
             h_sheaf = F.dropout(h_sheaf, p=self.dropout, training=self.training)
         #add a head having just 1 on the diagonal. this should be similar to the normal hypergraph conv
@@ -174,6 +195,23 @@ class SheafBuilderGeneral(nn.Module):
                         dropout=0.0,
                         Normalization='ln',
                         InputNorm=self.norm)
+        if self.prediction_type == 'cp_decomp':
+            self.cp_W = MLP(
+                        in_channels=self.MLP_hidden+1, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=args.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+            self.cp_V = MLP(
+                        in_channels=args.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=args.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.MLP_hidden)
 
     def reset_parameters(self):
         if self.prediction_type == 'transformer':
@@ -184,6 +222,9 @@ class SheafBuilderGeneral(nn.Module):
             self.general_sheaf_lin2.reset_parameters()
         else:
             self.general_sheaf_lin.reset_parameters()
+        if self.prediction_type == 'cp_decomp':
+            self.cp_W.reset_parameters()
+            self.cp_V.reset_parameters()
 
     def forward(self, x, e, hyperedge_index, debug=False):
         """ 
@@ -210,6 +251,9 @@ class SheafBuilderGeneral(nn.Module):
             h_general_sheaf = predict_blocks_var2(x, hyperedge_index, self.general_sheaf_lin, self.args)
         elif self.prediction_type == 'MLP_var3':
             h_general_sheaf = predict_blocks_var3(x, hyperedge_index, self.general_sheaf_lin, self.general_sheaf_lin2, self.args)
+        elif self.prediction_type == 'cp_decomp':
+            h_general_sheaf = predict_blocks_cp_decomp(x, hyperedge_index, self.cp_W, self.cp_V, self.general_sheaf_lin, self.args)
+        
         #Iulia: Temporary debug
         # pdb.set_trace()
         # h_general_sheaf = h_general_sheaf.reshape(-1,self.d,self.d) * torch.eye(self.d, device=self.device)
@@ -322,6 +366,23 @@ class SheafBuilderOrtho(nn.Module):
                         dropout=0.0,
                         Normalization='ln',
                         InputNorm=self.norm)
+        if self.prediction_type == 'cp_decomp':
+            self.cp_W = MLP(
+                        in_channels=self.MLP_hidden+1, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=args.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+            self.cp_V = MLP(
+                        in_channels=args.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=args.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.MLP_hidden)
 
     def reset_parameters(self):
         if self.prediction_type == 'transformer':
@@ -332,7 +393,9 @@ class SheafBuilderOrtho(nn.Module):
             self.orth_sheaf_lin2.reset_parameters()
         else:
             self.orth_sheaf_lin.reset_parameters()
-
+        if self.prediction_type == 'cp_decomp':
+            self.cp_W.reset_parameters()
+            self.cp_V.reset_parameters()
     def forward(self, x, e, hyperedge_index, debug=False):
         """ 
         x: N x d 
@@ -360,6 +423,8 @@ class SheafBuilderOrtho(nn.Module):
             h_orth_sheaf = predict_blocks_var2(x, hyperedge_index, self.orth_sheaf_lin, self.args)
         elif self.prediction_type == 'MLP_var3':
             h_orth_sheaf = predict_blocks_var3(x, hyperedge_index, self.orth_sheaf_lin, self.orth_sheaf_lin2, self.args)
+        elif self.prediction_type == 'cp_decomp':
+            h_orth_sheaf = predict_blocks_cp_decomp(x, hyperedge_index, self.cp_W, self.cp_V, self.orth_sheaf_lin, self.args)
         
         #convert the d*(d-1)//2 params into orthonormal dxd matrices using housholder transformation
         h_orth_sheaf = self.orth_transform(h_orth_sheaf) #sparse version of a NxExdxd tensor
@@ -460,6 +525,23 @@ class SheafBuilderLowRank(nn.Module):
                         dropout=0.0,
                         Normalization='ln',
                         InputNorm=self.norm)
+        if self.prediction_type == 'cp_decomp':
+            self.cp_W = MLP(
+                        in_channels=self.MLP_hidden+1, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=args.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+            self.cp_V = MLP(
+                        in_channels=args.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=args.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.MLP_hidden)
 
     def reset_parameters(self):
         if self.prediction_type == 'transformer':
@@ -470,6 +552,9 @@ class SheafBuilderLowRank(nn.Module):
             self.general_sheaf_lin2.reset_parameters()
         else:
             self.general_sheaf_lin.reset_parameters()
+        if self.prediction_type == 'cp_decomp':
+            self.cp_W.reset_parameters()
+            self.cp_V.reset_parameters()
 
     def forward(self, x, e, hyperedge_index, debug=False):
         """ 
@@ -496,7 +581,8 @@ class SheafBuilderLowRank(nn.Module):
             h_general_sheaf = predict_blocks_var2(x, hyperedge_index, self.general_sheaf_lin, self.args)
         elif self.prediction_type == 'MLP_var3':
             h_general_sheaf = predict_blocks_var3(x, hyperedge_index, self.general_sheaf_lin, self.general_sheaf_lin2, self.args)
-
+        elif self.prediction_type == 'cp_decomp':
+            h_general_sheaf = predict_blocks_cp_decomp(x, hyperedge_index, self.cp_W, self.cp_V, self.general_sheaf_lin, self.args)
 
         # h_general_sheaf is nnz x (2*d*r)
         h_general_sheaf_A = h_general_sheaf[:, :self.d*self.rank].reshape(h_general_sheaf.shape[0], self.d, self.rank) #nnz x d x r
@@ -641,6 +727,30 @@ def predict_blocks_var3(x, hyperedge_index, sheaf_lin, sheaf_lin2, args):
     
     return h_sheaf
 
+def predict_blocks_cp_decomp(x, hyperedge_index, cp_W, cp_V, sheaf_lin, args):
+    #here hypergraph_att  is always the average of the intermediate x features
+    row, col = hyperedge_index
+    xs = torch.index_select(x, dim=0, index=row)
+
+    xs_ones = torch.cat((xs, torch.ones(xs.shape[0],1).to(xs.device)), dim=-1) #nnz x f+1
+    xs_ones_proj = torch.tanh(cp_W(xs_ones)) #nnz x r
+    xs_prod =  scatter(xs_ones_proj, col, dim=0, reduce="mul") #edges x r
+    e = torch.relu(cp_V(xs_prod))#edges x f
+    e = e + torch.relu(scatter_add(x[row],col, dim=0))
+    es= torch.index_select(e, dim=0, index=col)
+
+    # select all pairs (node, hyperedge)
+    h_sheaf = torch.cat((xs,es), dim=-1) #sparse version of an NxEx2f tensor
+    h_sheaf = sheaf_lin(h_sheaf)  #sparse version of an NxExd tensor
+
+
+    if args.sheaf_act == 'sigmoid':
+        h_sheaf = F.sigmoid(h_sheaf) # output d numbers for every entry in the incidence matrix
+    elif args.sheaf_act == 'tanh':
+        h_sheaf = F.tanh(h_sheaf) # output d numbers for every entry in the incidence matrix
+    
+    return h_sheaf
+
 def predict_blocks_transformer(x, hyperedge_index, transformer_layer, transformer_lin_layer, args):
     row, col = hyperedge_index
 
@@ -724,7 +834,7 @@ class HGCNSheafBuilderDiag(nn.Module):
                         dropout=0.0,
                         Normalization='ln',
                         InputNorm=self.norm)
-        elif self.prediction_type in ['MLP_var2', 'MLP_var3']:
+        else:
             self.sheaf_lin = MLP(
                         in_channels=2*self.MLP_hidden,  
                         hidden_channels=args.MLP_hidden,
@@ -742,7 +852,23 @@ class HGCNSheafBuilderDiag(nn.Module):
                         dropout=0.0,
                         Normalization='ln',
                         InputNorm=self.norm)
-                        
+        if self.prediction_type == 'cp_decomp':
+            self.cp_W = MLP(
+                        in_channels=self.MLP_hidden+1, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=args.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+            self.cp_V = MLP(
+                        in_channels=args.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.MLP_hidden)             
 
     def reset_parameters(self):
         if self.prediction_type == 'transformer':
@@ -753,7 +879,9 @@ class HGCNSheafBuilderDiag(nn.Module):
             self.sheaf_lin2.reset_parameters()
         else:
             self.sheaf_lin.reset_parameters()
-        
+        if self.prediction_type == 'cp_decomp':
+            self.cp_W.reset_parameters()
+            self.cp_V.reset_parameters()
 
     #this is exclusively for diagonal sheaf
     def forward(self, x, e, hyperedge_index):
@@ -780,6 +908,8 @@ class HGCNSheafBuilderDiag(nn.Module):
             h_sheaf = predict_blocks_var2(x, hyperedge_index, self.sheaf_lin, self.args)
         elif self.prediction_type == 'MLP_var3':
             h_sheaf = predict_blocks_var3(x, hyperedge_index, self.sheaf_lin,  self.sheaf_lin2, self.args)
+        elif self.prediction_type == 'cp_decomp':
+            h_sheaf = predict_blocks_cp_decomp(x, hyperedge_index, self.cp_W, self.cp_V, self.sheaf_lin, self.args)
 
         if self.sheaf_dropout:
             h_sheaf = F.dropout(h_sheaf, p=self.dropout, training=self.training)
@@ -830,7 +960,7 @@ class HGCNSheafBuilderGeneral(nn.Module):
                         dropout=0.0,
                         Normalization='ln',
                         InputNorm=self.norm)
-        elif self.prediction_type in ['MLP_var2', 'MLP_var3']:
+        else:
             self.sheaf_lin = MLP(
                         in_channels=2*self.MLP_hidden, 
                         hidden_channels=args.MLP_hidden,
@@ -848,7 +978,23 @@ class HGCNSheafBuilderGeneral(nn.Module):
                         dropout=0.0,
                         Normalization='ln',
                         InputNorm=self.norm)
-                        
+        if self.prediction_type == 'cp_decomp':
+            self.cp_W = MLP(
+                        in_channels=self.MLP_hidden+1, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=args.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+            self.cp_V = MLP(
+                        in_channels=args.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.MLP_hidden)              
 
     def reset_parameters(self):
         if self.prediction_type == 'transformer':
@@ -859,7 +1005,9 @@ class HGCNSheafBuilderGeneral(nn.Module):
             self.sheaf_lin2.reset_parameters()
         else:
             self.sheaf_lin.reset_parameters()
-        
+        if self.prediction_type == 'cp_decomp':
+            self.cp_W.reset_parameters()
+            self.cp_V.reset_parameters()
 
     #this is exclusively for diagonal sheaf
     def forward(self, x, e, hyperedge_index):
@@ -886,6 +1034,8 @@ class HGCNSheafBuilderGeneral(nn.Module):
             h_sheaf = predict_blocks_var2(x, hyperedge_index, self.sheaf_lin, self.args)
         elif self.prediction_type == 'MLP_var3':
             h_sheaf = predict_blocks_var3(x, hyperedge_index, self.sheaf_lin,  self.sheaf_lin2, self.args)
+        elif self.prediction_type == 'cp_decomp':
+            h_sheaf = predict_blocks_cp_decomp(x, hyperedge_index, self.cp_W, self.cp_V, self.sheaf_lin, self.args)
 
         if self.sheaf_dropout:
             h_sheaf = F.dropout(h_sheaf, p=self.dropout, training=self.training)
@@ -934,7 +1084,7 @@ class HGCNSheafBuilderOrtho(nn.Module):
                         dropout=0.0,
                         Normalization='ln',
                         InputNorm=self.norm)
-        elif self.prediction_type in ['MLP_var2', 'MLP_var3']:
+        else:
             self.sheaf_lin = MLP(
                         in_channels=2*self.MLP_hidden, 
                         hidden_channels=args.MLP_hidden,
@@ -952,7 +1102,23 @@ class HGCNSheafBuilderOrtho(nn.Module):
                         dropout=0.0,
                         Normalization='ln',
                         InputNorm=self.norm)
-                        
+        if self.prediction_type == 'cp_decomp':
+            self.cp_W = MLP(
+                        in_channels=self.MLP_hidden+1, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=args.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+            self.cp_V = MLP(
+                        in_channels=args.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.MLP_hidden)             
 
     def reset_parameters(self):
         if self.prediction_type == 'transformer':
@@ -963,7 +1129,9 @@ class HGCNSheafBuilderOrtho(nn.Module):
             self.sheaf_lin2.reset_parameters()
         else:
             self.sheaf_lin.reset_parameters()
-        
+        if self.prediction_type == 'cp_decomp':
+            self.cp_W.reset_parameters()
+            self.cp_V.reset_parameters()
 
     #this is exclusively for diagonal sheaf
     def forward(self, x, e, hyperedge_index):
@@ -990,6 +1158,8 @@ class HGCNSheafBuilderOrtho(nn.Module):
             h_sheaf = predict_blocks_var2(x, hyperedge_index, self.sheaf_lin, self.args)
         elif self.prediction_type == 'MLP_var3':
             h_sheaf = predict_blocks_var3(x, hyperedge_index, self.sheaf_lin,  self.sheaf_lin2, self.args)
+        elif self.prediction_type == 'cp_decomp':
+            h_sheaf = predict_blocks_cp_decomp(x, hyperedge_index, self.cp_W, self.cp_V, self.sheaf_lin, self.args)
 
         h_sheaf = self.orth_transform(h_sheaf) #sparse version of a NxExdxd tensor
         if self.sheaf_dropout:
@@ -1041,7 +1211,7 @@ class HGCNSheafBuilderLowRank(nn.Module):
                         dropout=0.0,
                         Normalization='ln',
                         InputNorm=self.norm)
-        elif self.prediction_type in ['MLP_var2', 'MLP_var3']:
+        else:
             self.sheaf_lin = MLP(
                         in_channels=2*self.MLP_hidden, 
                         hidden_channels=args.MLP_hidden,
@@ -1059,7 +1229,23 @@ class HGCNSheafBuilderLowRank(nn.Module):
                         dropout=0.0,
                         Normalization='ln',
                         InputNorm=self.norm)
-                        
+        if self.prediction_type == 'cp_decomp':
+            self.cp_W = MLP(
+                        in_channels=self.MLP_hidden+1, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=args.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+            self.cp_V = MLP(
+                        in_channels=args.MLP_hidden, 
+                        hidden_channels=args.MLP_hidden,
+                        out_channels=self.MLP_hidden,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.MLP_hidden)                
 
     def reset_parameters(self):
         if self.prediction_type == 'transformer':
@@ -1070,7 +1256,9 @@ class HGCNSheafBuilderLowRank(nn.Module):
             self.sheaf_lin2.reset_parameters()
         else:
             self.sheaf_lin.reset_parameters()
-        
+        if self.prediction_type == 'cp_decomp':
+            self.cp_W.reset_parameters()
+            self.cp_V.reset_parameters()
 
     #this is exclusively for diagonal sheaf
     def forward(self, x, e, hyperedge_index):
@@ -1097,7 +1285,9 @@ class HGCNSheafBuilderLowRank(nn.Module):
             h_sheaf = predict_blocks_var2(x, hyperedge_index, self.sheaf_lin, self.args)
         elif self.prediction_type == 'MLP_var3':
             h_sheaf = predict_blocks_var3(x, hyperedge_index, self.sheaf_lin,  self.sheaf_lin2, self.args)
-        
+        elif self.prediction_type == 'cp_decomp':
+            h_sheaf = predict_blocks_cp_decomp(x, hyperedge_index, self.cp_W, self.cp_V, self.sheaf_lin, self.args)
+
         # h_general_sheaf is nnz x (2*d*r)
         h_general_sheaf_A = h_sheaf[:, :self.d*self.rank].reshape(h_sheaf.shape[0], self.d, self.rank) #nnz x d x r
         h_general_sheaf_B = h_sheaf[:, self.d*self.rank:].reshape(h_sheaf.shape[0], self.d, self.rank) #nnz x d x r

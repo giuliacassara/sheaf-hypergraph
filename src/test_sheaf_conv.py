@@ -27,7 +27,7 @@ def get_test_config():
         'num_classes': 32,
         'heads': 4,
         'sheaf_normtype': 'degree_norm',
-        'sheaf_pred_block': 'transformer',
+        'sheaf_pred_block': 'cp_decomp',
         'sheaf_transformer_head': 8,#MLP_hidden needs to divide this
         'dynamic_sheaf': True,
         'sheaf_left_proj': False,
