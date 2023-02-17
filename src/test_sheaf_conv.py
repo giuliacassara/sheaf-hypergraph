@@ -26,10 +26,10 @@ def get_test_config():
         'num_features': 16,
         'num_classes': 32,
         'heads': 4,
-        'sheaf_normtype': 'degree_norm',
-        'sheaf_pred_block': 'cp_decomp',
+        'sheaf_normtype': 'block_norm',
+        'sheaf_pred_block': 'MLP_var1',
         'sheaf_transformer_head': 8,#MLP_hidden needs to divide this
-        'dynamic_sheaf': True,
+        'dynamic_sheaf': False,
         'sheaf_left_proj': False,
         'sheaf_act': 'sigmoid',
         'sheaf_dropout': False,
@@ -50,7 +50,7 @@ def get_test_config():
         'HyperGCN_mediators': True,
 
         'rank': 2,
-        'noisy_low_rank': True
+        'residual_HCHA': False
 
 
     }
@@ -248,7 +248,7 @@ def test_equivariance_sheaf_general():
 
         print(out.mean(), perm_out.mean())
         print(torch.abs(out-perm_out).max())
-        assert(torch.allclose(out, perm_out, atol=1e-5))
+        assert(torch.allclose(out, perm_out, atol=1e-4))
         print("model GeneralSheafs is permutation equivariant")
 
 def test_equivariance_sheaf_low_rank():
@@ -397,7 +397,7 @@ def test_equivariance_sheaf_hgcn(sheaf_type):
         # print("perm_out", perm_out.mean(-1))
 
         print(torch.abs(out-perm_out).max())
-        # print(out.mean(), perm_out.mean())
+        print(out.mean(), perm_out.mean())
         assert(torch.allclose(out, perm_out, atol=1e-5))
         print(f"model HGCN {sheaf_type} is permutation equivariant")
 

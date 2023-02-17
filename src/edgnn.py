@@ -24,7 +24,7 @@ from sheaf_builder import SheafBuilderDiag, SheafBuilderOrtho, SheafBuilderGener
 class EquivSetConv(nn.Module):
     def __init__(self, in_features, out_features, mlp1_layers=1, mlp2_layers=1,
         mlp3_layers=1, aggr='add', alpha=0.5, dropout=0., normalization='None', input_norm=False):
-        super().__init__()
+        super(EquivSetConv).__init__()
 
         if mlp1_layers > 0:
             self.W1 = MLP(in_features, out_features, out_features, mlp1_layers,
@@ -56,6 +56,7 @@ class EquivSetConv(nn.Module):
             self.W.reset_parameters()
 
     def forward(self, X, vertex, edges, X0, alpha):
+        pdb.set_trace()
         N = X.shape[-2]
 
         Xve = self.W1(X)[..., vertex, :] # [nnz, C]
@@ -332,10 +333,6 @@ class SheafEquivSetGNN(nn.Module):
         
         self.prediction_type = args.sheaf_pred_block
         self.dynamic_sheaf = args.dynamic_sheaf
-
-        # self.sheaf_lin = nn.ModuleList()
-        # self.transformer_layer = nn.ModuleList()
-        # self.transformer_lin_layer = nn.ModuleList()
         
         if sheaf_type == 'DiagEDGNN':
             ModelSheaf = SheafBuilderDiag

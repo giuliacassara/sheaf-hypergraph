@@ -128,6 +128,8 @@ class SheafHyperGCN(nn.Module):
         self.hyperedge_attr = None
         self.dynamic_sheaf = args.dynamic_sheaf
 
+        self.residual = args.residual_HCHA
+        self.sheaf_type = sheaf_type
         # sheaf_type = 'OrthoSheafs'
         if sheaf_type == 'DiagSheafs':
             ModelSheaf = HGCNSheafBuilderDiag
@@ -185,25 +187,56 @@ class SheafHyperGCN(nn.Module):
     def normalise(self, A, hyperedge_index, num_nodes, d):
         if self.args.sheaf_normtype == 'degree_norm':
             D = scatter_add(hyperedge_index.new_ones(hyperedge_index.size(1)), hyperedge_index[0], dim=0, dim_size=num_nodes*d) 
+            D = torch.pow(D, -1.0)
+            D[D == float("inf")] = 0
+            D = torch.diag(D).to_sparse()
+            A = torch.sparse.mm(D, A) # this is laplacian delta
+
+        elif self.args.sheaf_normtype == 'sym_degree_norm':
+            D = scatter_add(hyperedge_index.new_ones(hyperedge_index.size(1)), hyperedge_index[0], dim=0, dim_size=num_nodes*d) 
             D = torch.pow(D, -0.5)
             D[D == float("inf")] = 0
             D = torch.diag(D).to_sparse()
             A = torch.sparse.mm(D, A) # this is laplacian delta
             A = torch.sparse.mm(A, D) # this is laplacian delta
 
-        # #TODO: check this. seems buggy
-        # elif self.args.sheaf_normtype == 'block_norm':
-        #     #normalise using diag(A) and diag(HTH) 
-        #     # this way of computing the normalisation tensor is ONLY valid for diagonal sheaf
-        #     D = A * torch.eye(A.shape[0]).to(A.device)
-        #     D = D.to_dense().diagonal()
-        #     D = torch.pow(D, -0.5) #can compute inverse like this because the matrix is diagonal
-        #     D = torch.nan_to_num(D, nan=0.0, posinf=0, neginf=0)
+        elif self.args.sheaf_normtype == 'block_norm':
+            # extract diagonals
+            D = A.to_dense().view((num_nodes, d, num_nodes, d))
+            D = torch.permute(D, (0,2,1,3)) #num_nodes x num_nodes x d x d
+            D = torch.diagonal(D, dim1=0, dim2=1) # d x d x num_nodes
+            D = torch.permute(D, (2,0,1)) #num_nodes x d x d
 
-        #     D = torch.diag(D).to_sparse()
-        #     A = torch.sparse.mm(D, A) # this is laplacian delta
-        #     A = torch.sparse.mm(A, D) # this is laplacian delta
-            
+            if self.sheaf_type in ["GeneralSheafs", "LowRankSheafs"]:
+                D = utils.batched_sym_matrix_pow(D, -1.0) #num_nodes x d x d
+            else:
+                D = torch.pow(D, -1.0)
+                D[D == float("inf")] = 0
+
+            D = torch.block_diag(*torch.unbind(D,0))
+            D = D.to_sparse()
+            A = torch.sparse.mm(D, A) # this is laplacian delta
+            if self.sheaf_type in ["GeneralSheafs", "LowRankSheafs"]:
+                A = A.to_dense().clamp(-1,1).to_sparse()
+        elif self.args.sheaf_normtype == 'sym_block_norm':
+            # extract diagonals
+            D = A.to_dense().view((num_nodes, d, num_nodes, d))
+            D = torch.permute(D, (0,2,1,3)) #num_nodes x num_nodes x d x d
+            D = torch.diagonal(D, dim1=0, dim2=1) # d x d x num_nodes
+            D = torch.permute(D, (2,0,1)) #num_nodes x d x d
+
+            if self.sheaf_type in ["GeneralSheafs", "LowRankSheafs"]:
+                D = utils.batched_sym_matrix_pow(D, -0.5) #num_nodes x d x d
+            else:
+                D = torch.pow(D, -0.5)
+                D[D == float("inf")] = 0
+
+            D = torch.block_diag(*torch.unbind(D,0))
+            D = D.to_sparse()
+            A = torch.sparse.mm(D, A) # this is laplacian delta
+            A = torch.sparse.mm(A, D) # this is laplacian delta
+            if self.sheaf_type in ["GeneralSheafs", "LowRankSheafs"]:
+                A = A.to_dense().clamp(-1,1).to_sparse()
         return A
 
     def forward(self, data):
@@ -405,6 +438,8 @@ class HyperSheafs(nn.Module):
         self.hyperedge_attr = None
         self.dynamic_sheaf = args.dynamic_sheaf
 
+        self.residual = args.residual_HCHA
+
         if args.cuda in [0, 1]:
             self.device = torch.device('cuda:'+str(args.cuda)
                               if torch.cuda.is_available() else 'cpu')
@@ -435,13 +470,17 @@ class HyperSheafs(nn.Module):
         
 #         Note that add dropout to attention is default in the original paper
         self.convs = nn.ModuleList()
-        self.convs.append(ModelConv(self.MLP_hidden, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj, norm=self.norm))
+        self.convs.append(ModelConv(self.MLP_hidden, self.MLP_hidden, d=self.d, device=self.device, 
+                                        norm_type=self.norm_type, left_proj=self.left_proj, 
+                                        norm=self.norm, residual=self.residual))
         
         self.sheaf_builder = nn.ModuleList()
         self.sheaf_builder.append(ModelSheaf(args))
         #iulia Qs: add back the multi-layers?
         for _ in range(self.num_layers-1):
-            self.convs.append(ModelConv(self.MLP_hidden, self.MLP_hidden, d=self.d, device=self.device, norm_type=self.norm_type, left_proj=self.left_proj, norm=self.norm))
+            self.convs.append(ModelConv(self.MLP_hidden, self.MLP_hidden, d=self.d, device=self.device, 
+                                        norm_type=self.norm_type, left_proj=self.left_proj, 
+                                        norm=self.norm, residual=self.residual))
             if self.dynamic_sheaf:
                 self.sheaf_builder.append(ModelSheaf(args))
                 
@@ -580,7 +619,8 @@ class HCHA(nn.Module):
         self.init_hedge = args.init_hedge
         self.hyperedge_attr = None
 
-#         Note that add dropout to attention is default in the original paper
+        self.residual = args.residual_HCHA
+#        Note that add dropout to attention is default in the original paper
         self.convs = nn.ModuleList()
         #iulia Gs: should change here heads=args.heads?
         self.convs.append(HypergraphConv(args.num_features,
@@ -624,7 +664,7 @@ class HCHA(nn.Module):
 
         for i, conv in enumerate(self.convs[:-1]):
             # print(i)
-            x = F.elu(conv(x, edge_index, hyperedge_attr = self.hyperedge_attr))
+            x = F.elu(conv(x, edge_index, hyperedge_attr = self.hyperedge_attr, residual=self.residual))
             x = F.dropout(x, p=self.dropout, training=self.training)
 #         x = F.dropout(x, p=self.dropout, training=self.training)
 

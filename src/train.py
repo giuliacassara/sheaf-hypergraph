@@ -338,7 +338,7 @@ if __name__ == '__main__':
     parser.add_argument('--init_hedge', default="rand", type=str, choices=['rand', 'avg']) 
     parser.add_argument('--use_attention', type=str2bool, default=True) #used in HCHA. if true ypergraph attention otherwise hypergraph conv
     parser.add_argument('--tag', type=str, default='testing') #helper for wandb in order to filter out the testing runs. if set to testing we are in dev mode
-    parser.add_argument('--sheaf_normtype', type=str, default='degree_norm', choices=['degree_norm', 'block_norm']) #used to normalise the sheaf laplacian. will add other normalisations later
+    parser.add_argument('--sheaf_normtype', type=str, default='degree_norm', choices=['degree_norm', 'block_norm', 'sym_degree_norm', 'sym_block_norm']) #used to normalise the sheaf laplacian. will add other normalisations later
     parser.add_argument('--sheaf_act', type=str, default='sigmoid', choices=['sigmoid', 'tanh', 'none']) #final activation used after predicting the dxd block
     parser.add_argument('--sheaf_dropout', type=str2bool, default=False) #final activation used after predicting the dxd block
     parser.add_argument('--sheaf_left_proj', type=str2bool, default=False) #multiply to the left with IxW
@@ -348,8 +348,10 @@ if __name__ == '__main__':
     parser.add_argument('--sheaf_transformer_head', type=int, default=1) #only when sheaf_pred_block==transformer. The number of transformer head used to predict the dxd blocks
     parser.add_argument('--AllSet_input_norm', default=True)
     
+    parser.add_argument('--residual_HCHA', default=False) # HCHA and *Sheafs only; if HCHA-based architectures have conv layers with residual connections
+    
     parser.add_argument('--rank', default=0, type=int, help='rank for dxd blocks in LowRankSheafs') # ronly for ank for the low-rank matrix generation of the dxd block                                                                                          # should be < d
-    parser.add_argument('--noisy_low_rank', default=False) #only for ank for the low-rank . tell us if we want to add some gaussian noise on the diagonal of the low-rank matrices
+    # parser.add_argument('--noisy_low_rank', default=False) #only for ank for the low-rank . tell us if we want to add some gaussian noise on the diagonal of the low-rank matrices
 
     parser.set_defaults(PMA=True)  # True: Use PMA. False: Use Deepsets.
     parser.set_defaults(add_self_loop=True)

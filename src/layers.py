@@ -27,6 +27,7 @@ from torch_geometric.typing import Adj, Size, OptTensor
 from typing import Optional
 import pdb
 
+import utils
 
 # This part is for PMA.
 # Modified from GATConv in pyg.
@@ -41,6 +42,54 @@ def zeros(tensor):
     if tensor is not None:
         tensor.data.fill_(0)
 
+def normalisation_matrices(x, hyperedge_index, alpha, num_nodes, num_edges, d, norm_type='degree_norm'):
+    #this will return either D^-1/B^-1 or D^(-1/2)/B^-1
+    if norm_type == 'degree_norm':
+        #return D_inv and B_inv used to normalised the laplacian (/propagation)
+        #normalise using node/hyperedge degrees D_e and D_v in the paper
+        D = scatter_add(x.new_ones(hyperedge_index.size(1)), hyperedge_index[0], dim=0, dim_size=num_nodes*d) 
+        D = 1.0 / D
+        D[D == float("inf")] = 0
+
+        B = scatter_add(x.new_ones(hyperedge_index.size(1)), hyperedge_index[1], dim=0, dim_size=num_edges*d)
+        B = 1.0 / B
+        B[B == float("inf")] = 0
+        return D, B
+
+    elif norm_type == 'sym_degree_norm':
+        #normalise using node/hyperedge degrees D_e and D_v in the paper
+        D = scatter_add(x.new_ones(hyperedge_index.size(1)), hyperedge_index[0], dim=0, dim_size=num_nodes*d) 
+        D = D ** (-0.5)
+        D[D == float("inf")] = 0
+
+        B = scatter_add(x.new_ones(hyperedge_index.size(1)), hyperedge_index[1], dim=0, dim_size=num_edges*d)
+        B = 1.0 / B
+        B[B == float("inf")] = 0
+        return D, B
+
+    elif norm_type == 'block_norm':
+        #normalise using diag(HHT) and diag(HTH) <- this take into account the values predicted in H as oposed to 0/1 as in the degree
+        # this way of computing the normalisation tensor is only valid for diagonal sheaf
+        D = scatter_add(alpha*alpha, hyperedge_index[0], dim=0, dim_size=num_nodes*d)
+        D = 1.0 / D #can compute inverse like this because the matrix is diagonal
+        D[D == float("inf")] = 0
+
+        B = scatter_add(alpha*alpha, hyperedge_index[1], dim=0, dim_size=num_edges*d)
+        B = 1.0 / B #can compute inverse like this because the matrix is diagonal
+        B[B == float("inf")] = 0
+        return D, B
+    
+    elif norm_type == 'sym_block_norm':
+        #normalise using diag(HHT) and diag(HTH) <- this take into account the values predicted in H as oposed to 0/1 as in the degree
+        # this way of computing the normalisation tensor is only valid for diagonal sheaf
+        D = scatter_add(alpha*alpha, hyperedge_index[0], dim=0, dim_size=num_nodes*d)
+        D = D ** (-0.5) #can compute inverse like this because the matrix is diagonal
+        D[D == float("inf")] = 0
+
+        B = scatter_add(alpha*alpha, hyperedge_index[1], dim=0, dim_size=num_edges*d)
+        B = 1.0 / B  #can compute inverse like this because the matrix is diagonal
+        B[B == float("inf")] = 0
+        return D, B
 
 class PMA(MessagePassing):
     """
@@ -322,7 +371,7 @@ class HypergraphConv(MessagePassing):
     and Hypergraph Attention" <https://arxiv.org/abs/1901.08150>`_ paper
     """
     def __init__(self, in_channels, out_channels, use_attention=False, heads=1,
-                 concat=True, negative_slope=0.2, dropout=0, bias=True,
+                 concat=True, negative_slope=0.2, dropout=0, bias=True, residual = False,
                  **kwargs):
         kwargs.setdefault('aggr', 'add')
         super().__init__(flow='source_to_target', node_dim=0, **kwargs)
@@ -331,6 +380,7 @@ class HypergraphConv(MessagePassing):
         self.out_channels = out_channels
         self.use_attention = use_attention
 
+        self.residual = residual
         if self.use_attention:
             self.heads = heads
             self.concat = concat
@@ -388,7 +438,7 @@ class HypergraphConv(MessagePassing):
             hyperedge_weight = x.new_ones(num_edges)
 
         x = self.lin(x)
-
+        data_x = x
         alpha = None
         if self.use_attention:
             assert hyperedge_attr is not None
@@ -427,6 +477,8 @@ class HypergraphConv(MessagePassing):
         if self.bias is not None:
             out = out + self.bias
 
+        if self.residual:
+            out = out + data_x
         return out
 
 
@@ -444,7 +496,8 @@ class HypergraphDiagSheafConv(MessagePassing):
     r"""
     
     """
-    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', left_proj=None, norm=None,
+    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', 
+                left_proj=None, norm=None, residual = False,
                  **kwargs):
         kwargs.setdefault('aggr', 'add')
         super().__init__(flow='source_to_target', node_dim=0, **kwargs)
@@ -455,7 +508,8 @@ class HypergraphDiagSheafConv(MessagePassing):
         self.norm_type = norm_type
         self.left_proj = left_proj
         self.norm = norm
-        
+        self.residual = residual
+
         if self.left_proj:
             self.lin_left_proj = MLP(in_channels=d, 
                         hidden_channels=d,
@@ -492,33 +546,6 @@ class HypergraphDiagSheafConv(MessagePassing):
 
         zeros(self.bias)
 
-    def normalisation_matrices(self, x, hyperedge_index, alpha, num_nodes, num_edges, norm_type='degree_norm'):
-        #return D_inv and B_inv used to normalised the laplacian (/propagation)
-        if norm_type == 'degree_norm':
-            #normalise using node/hyperedge degrees D_e and D_v in the paper
-            D = scatter_add(x.new_ones(hyperedge_index.size(1)), hyperedge_index[0], dim=0, dim_size=num_nodes*self.d) 
-            D = 1.0 / D
-            D[D == float("inf")] = 0
-
-            B = scatter_add(x.new_ones(hyperedge_index.size(1)), hyperedge_index[1], dim=0, dim_size=num_edges*self.d)
-            B = 1.0 / B
-            B[B == float("inf")] = 0
-
-            return D, B
-
-        elif norm_type == 'block_norm':
-            #normalise using diag(HHT) and diag(HTH) <- this take into account the values predicted in H as oposed to 0/1 as in the degree
-            # this way of computing the normalisation tensor is only valid for diagonal sheaf
-            D = scatter_add(alpha*alpha, hyperedge_index[0], dim=0, dim_size=num_nodes*self.d)
-            D = 1.0 / D #can compute inverse like this because the matrix is diagonal
-            D[D == float("inf")] = 0
-
-            B = scatter_add(alpha*alpha, hyperedge_index[1], dim=0, dim_size=num_edges*self.d)
-            B = 1.0 / B #can compute inverse like this because the matrix is diagonal
-            B[B == float("inf")] = 0
-            return D, B
-
-
     def forward(self, x: Tensor, hyperedge_index: Tensor,
                 alpha, 
                 num_nodes,
@@ -535,16 +562,26 @@ class HypergraphDiagSheafConv(MessagePassing):
             x = self.lin_left_proj(x)
             x = x.reshape(-1,num_nodes * self.d).t()
         x = self.lin(x)
-        D_inv, B_inv = self.normalisation_matrices(x, hyperedge_index, alpha, num_nodes, num_edges, self.norm_type)
+        data_x = x
+
+        #depending on norm_type D^-1 or D^-1/2
+        D_inv, B_inv = normalisation_matrices(x, hyperedge_index, alpha, num_nodes, num_edges, self.d, self.norm_type)
+
+
+        if self.norm_type in ['sym_degree_norm', 'sym_block_norm']:
+            # compute D^(-1/2) @ X
+            x = D_inv.unsqueeze(-1) * x
 
         out = self.propagate(hyperedge_index, x=x, norm=B_inv, alpha=alpha,
                              size=(num_nodes*self.d, num_edges*self.d))
+
         out = self.propagate(hyperedge_index.flip([0]), x=out, norm=D_inv,
                              alpha=alpha, size=(num_edges*self.d, num_nodes*self.d))
 
         if self.bias is not None:
             out = out + self.bias
-
+        if self.residual:
+            out = out + data_x
         return out
 
 
@@ -562,7 +599,8 @@ class HypergraphOrthoSheafConv(MessagePassing):
     r"""
     
     """
-    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', left_proj=None, norm=None,
+    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', 
+                left_proj=None, norm=None, residual = False,
                  **kwargs):
         kwargs.setdefault('aggr', 'add')
         super().__init__(flow='source_to_target', node_dim=0, **kwargs)
@@ -573,7 +611,17 @@ class HypergraphOrthoSheafConv(MessagePassing):
         self.norm_type=norm_type
         self.norm=norm
 
+        #for ortho matrix block <=> degree
+        if self.norm_type == 'block_norm':
+            self.norm_type = 'degree_norm'
+        elif self.norm_type == 'sym_block_norm':
+            self.norm_type = 'sym_degree_norm'
+        
+
+
         self.left_proj = left_proj
+        self.residual = residual
+
         if self.left_proj:
             self.lin_left_proj = MLP(in_channels=d, 
                         hidden_channels=d,
@@ -604,31 +652,6 @@ class HypergraphOrthoSheafConv(MessagePassing):
         self.lin.reset_parameters()
         zeros(self.bias)
 
-    def normalisation_matrices(self, x, hyperedge_index, alpha, num_nodes, num_edges, norm_type='degree_norm'):
-        #return D_inv and B_inv used to normalised the propagation
-        if norm_type == 'degree_norm':
-            # D = scatter_add(alpha, hyperedge_index[0], dim=0, dim_size=num_nodes*self.d)
-            D = scatter_add(x.new_ones(hyperedge_index.size(1)), hyperedge_index[0], dim=0, dim_size=num_nodes*self.d) 
-            D = 1.0 / D
-            D[D == float("inf")] = 0
-
-            B = scatter_add(x.new_ones(hyperedge_index.size(1)), hyperedge_index[1], dim=0, dim_size=num_edges*self.d)
-            # B = scatter_add(alpha, hyperedge_index[1], dim=0, dim_size=num_edges*self.d)
-            B = 1.0 / B
-            B[B == float("inf")] = 0
-
-            return D, B
-        elif norm_type == 'block_norm':
-            # normalise using diag(HHT) and diag(HTH) <- this take into account the values predicted in H as oposed to 0/1 as in the degree
-            # For orthonormal blocks block_norm is equivalent to degree_norm (because of the HHT=I condition)s
-            D = scatter_add(x.new_ones(hyperedge_index.size(1)), hyperedge_index[0], dim=0, dim_size=num_nodes*self.d) 
-            D = 1.0 / D
-            D[D == float("inf")] = 0
-
-            B = scatter_add(x.new_ones(hyperedge_index.size(1)), hyperedge_index[1], dim=0, dim_size=num_edges*self.d)
-            B = 1.0 / B
-            B[B == float("inf")] = 0
-            return D, B
 
     def forward(self, x: Tensor, hyperedge_index: Tensor,
                 alpha, 
@@ -646,7 +669,13 @@ class HypergraphOrthoSheafConv(MessagePassing):
             x = self.lin_left_proj(x)
             x = x.reshape(-1,num_nodes * self.d).t()
         x = self.lin(x)    
-        D_inv, B_inv = self.normalisation_matrices(x, hyperedge_index, alpha, num_nodes, num_edges, norm_type=self.norm_type)
+        data_x = x
+
+        D_inv, B_inv = normalisation_matrices(x, hyperedge_index, alpha, num_nodes, num_edges, self.d, norm_type=self.norm_type)
+
+        if self.norm_type in ['sym_degree_norm', 'sym_block_norm']:
+            # compute D^(-1/2) @ X
+            x = D_inv.unsqueeze(-1) * x
 
         out = self.propagate(hyperedge_index, x=x, norm=B_inv, alpha=alpha,
                              size=(num_nodes*self.d, num_edges*self.d))
@@ -656,6 +685,8 @@ class HypergraphOrthoSheafConv(MessagePassing):
         if self.bias is not None:
             out = out + self.bias
 
+        if self.residual:
+            out = out + data_x
         return out
 
 
@@ -675,7 +706,8 @@ class HypergraphGeneralSheafConv(MessagePassing):
     r"""
     
     """
-    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', left_proj=None, norm=None,
+    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', 
+                left_proj=None, norm=None, residual=False,
                  **kwargs):
         kwargs.setdefault('aggr', 'add')
         super().__init__(flow='source_to_target', node_dim=0, **kwargs)
@@ -686,7 +718,8 @@ class HypergraphGeneralSheafConv(MessagePassing):
         self.norm=norm
 
         self.left_proj = left_proj
-        
+        self.residual = residual
+
         if self.left_proj:
             self.lin_left_proj = MLP(in_channels=d, 
                         hidden_channels=d,
@@ -720,31 +753,42 @@ class HypergraphGeneralSheafConv(MessagePassing):
         self.lin.reset_parameters()
         zeros(self.bias)
 
-  
-    def normalisation_matrices(self, x, hyperedge_index, alpha, num_nodes, num_edges, norm_type='degree_norm'):
-        #return D_inv and B_inv used to normalised the propagation
-        if norm_type == 'degree_norm':
-            D = scatter_add(x.new_ones(hyperedge_index.size(1)), hyperedge_index[0], dim=0, dim_size=num_nodes*self.d) 
-            D = 1.0 / D
-            D[D == float("inf")] = 0
+    def normalise(self, h_general_sheaf, hyperedge_index, norm_type, num_nodes, num_edges):
+        #this is just for block and sym_block normalisation
+        
+        #index correspond to the small matrix
+        row_small = hyperedge_index[0].view(-1,self.d,self.d)[:,0,0] // self.d
+        col_small = hyperedge_index[1].view(-1,self.d,self.d)[:,0,0] // self.d
 
-            B = scatter_add(x.new_ones(hyperedge_index.size(1)), hyperedge_index[1], dim=0, dim_size=num_edges*self.d)
-            B = 1.0 / B
-            B[B == float("inf")] = 0
+        h_general_sheaf_1 = h_general_sheaf.reshape(row_small.shape[0], self.d, self.d)
 
-            return D, B
-        elif norm_type == 'block_norm':
-      
-            # D = scatter_add(x.new_ones(hyperedge_index.size(1)), hyperedge_index[0], dim=0, dim_size=num_nodes*self.d) 
-            D = x.new_ones(num_nodes*self.d)
-            # D[D == float("inf")] = 0
+        # 
+        to_be_inv_nodes = torch.bmm(h_general_sheaf_1, h_general_sheaf_1.permute(0,2,1)) 
+        to_be_inv_nodes = scatter_add(to_be_inv_nodes, row_small, dim=0, dim_size=num_nodes)
 
-            # B = scatter_add(x.new_ones(hyperedge_index.size(1)), hyperedge_index[1], dim=0, dim_size=num_edges*self.d)
-            B = x.new_ones(num_edges*self.d)
-            # B[B == float("inf")] = 0
+        # 
+        to_be_inv_edges = torch.bmm(h_general_sheaf_1.permute(0,2,1), h_general_sheaf_1)
+        to_be_inv_edges = scatter_add(to_be_inv_edges, col_small, dim=0, dim_size=num_edges)
 
-            return D, B
+        if norm_type in ['block_norm']:
+            d_inv_nodes = utils.batched_sym_matrix_pow(to_be_inv_nodes, -1.0) #n_nodes x d x d
+            d_inv_edges = utils.batched_sym_matrix_pow(to_be_inv_edges, -1.0) #n_edges x d x d
 
+            return d_inv_nodes, d_inv_edges
+
+        elif norm_type in ['sym_block_norm']:
+            d_sqrt_inv_nodes = utils.batched_sym_matrix_pow(to_be_inv_nodes, -0.5) #n_nodes x d x d
+            d_sqrt_inv_edges = utils.batched_sym_matrix_pow(to_be_inv_edges, -0.5) #n_edges x d x d
+
+            # alpha_norm = torch.bmm(d_sqrt_inv_nodes_large, h_general_sheaf_1)
+            # alpha_norm = torch.bmm(alpha_norm, d_sqrt_inv_edges_large)
+            # h_general_sheaf = alpha_norm.clamp(min=-1, max=1)
+            # h_general_sheaf = h_general_sheaf.reshape(h_general_sheaf.shape[0], self.d*self.d)
+            return d_sqrt_inv_nodes, d_sqrt_inv_edges
+
+        # ones_nodes_large = torch.ones((num_nodes,self.d, self.d)).to(h_general_sheaf.device)
+        # ones_edges_large = torch.ones((num_edges,self.d, self.d)).to(h_general_sheaf.device)
+        # return ones_nodes_large, ones_edges_large
 
     def forward(self, x: Tensor, hyperedge_index: Tensor,
                 alpha, 
@@ -764,15 +808,48 @@ class HypergraphGeneralSheafConv(MessagePassing):
             x = x.reshape(-1,num_nodes * self.d).t()
 
         x = self.lin(x)
-        D_inv, B_inv = self.normalisation_matrices(x, hyperedge_index, alpha, num_nodes, num_edges, norm_type=self.norm_type)
+        data_x = x
+        if self.norm_type in ['block_norm', 'sym_block_norm']:
+            # NOTE: the normalisation is specific to general sheaf
+            D_inv, B_inv = self.normalise(alpha, hyperedge_index, self.norm_type, num_nodes, num_edges) # num_nodes x d x d
+            D_inv = torch.block_diag(*torch.unbind(D_inv)) # nd x nd
+            B_inv = torch.block_diag(*torch.unbind(B_inv)) # ed x ed
+            # D_inv = D_inv.clamp(-2,2)
+            # B_inv = B_inv.clamp(-2,2)
+
+        else:
+            D_inv, B_inv = normalisation_matrices(x, hyperedge_index, alpha, num_nodes, num_edges, self.d, norm_type=self.norm_type)
         
-        out = self.propagate(hyperedge_index, x=x, norm=B_inv, alpha=alpha,
-                            size=(num_nodes*self.d, num_edges*self.d))
-        out = self.propagate(hyperedge_index.flip([0]), x=out, norm=D_inv,
-                            alpha=alpha, size=(num_edges*self.d, num_nodes*self.d))
+        # x: (num_nodes*d) x f
+        if self.norm_type  == 'sym_degree_norm':
+            # compute D^(-1/2) @ X
+            x = D_inv.unsqueeze(-1) * x
+        elif self.norm_type  == 'sym_degree_norm':
+            x = D_inv @ x
+
+        if self.norm_type in ['sym_degree_norm', 'degree_norm']:
+            out = self.propagate(hyperedge_index, x=x, norm=B_inv, alpha=alpha,
+                                size=(num_nodes*self.d, num_edges*self.d))
+            out = self.propagate(hyperedge_index.flip([0]), x=out, norm=D_inv,
+                                alpha=alpha, size=(num_edges*self.d, num_nodes*self.d))
+        
+        elif self.norm_type in ['sym_block_norm', 'block_norm']:
+            #we keem norm as identity, but explicitly multiply with the corresponding matrix
+            no_norm_node = torch.ones(num_nodes*self.d).to(x.device)
+            no_norm_edge = torch.ones(num_edges*self.d).to(x.device)
+
+            out = self.propagate(hyperedge_index, x=x, norm=no_norm_edge, alpha=alpha,
+                                size=(num_nodes*self.d, num_edges*self.d))
+            out = B_inv @ out
+            out = self.propagate(hyperedge_index.flip([0]), x=out, norm=no_norm_node,
+                                alpha=alpha, size=(num_edges*self.d, num_nodes*self.d))
+            out = D_inv @ out 
         
         if self.bias is not None:
             out = out + self.bias
+
+        if self.residual:
+            out = out + data_x
 
         return out
 
@@ -819,6 +896,7 @@ class MLP(nn.Module):
                         nn.Linear(hidden_channels, hidden_channels))
                     self.normalizations.append(nn.BatchNorm1d(hidden_channels))
                 self.lins.append(nn.Linear(hidden_channels, out_channels))
+
         elif Normalization == 'ln':
             print("using LN")
             if num_layers == 1:

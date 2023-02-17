@@ -226,6 +226,8 @@ class SheafBuilderGeneral(nn.Module):
             self.cp_W.reset_parameters()
             self.cp_V.reset_parameters()
 
+        
+
     def forward(self, x, e, hyperedge_index, debug=False):
         """ 
         x: N x f
@@ -260,6 +262,7 @@ class SheafBuilderGeneral(nn.Module):
         # h_general_sheaf = h_general_sheaf.reshape(-1,self.d*self.d)
         if debug:
             self.h_general_sheaf = h_general_sheaf #for debug purpose
+
         if self.sheaf_dropout:
             h_general_sheaf = F.dropout(h_general_sheaf, p=self.dropout, training=self.training)
         if (debug==True):
@@ -279,39 +282,13 @@ class SheafBuilderGeneral(nn.Module):
         d_range_edges = d_range.repeat(self.d).view(-1,1) #0,1..d,0,1..d..   d*d elems
         d_range_nodes = d_range.repeat_interleave(self.d).view(-1,1) #0,0..0,1,1..1..d,d..d  d*d elems
         hyperedge_index = hyperedge_index.unsqueeze(1) 
-   
+        # print(hyperedge_index)
 
         hyperedge_index_0 = self.d * hyperedge_index[0] + d_range_nodes
         hyperedge_index_0 = hyperedge_index_0.permute((1,0)).reshape(1,-1)
         hyperedge_index_1 = self.d * hyperedge_index[1] + d_range_edges
         hyperedge_index_1 = hyperedge_index_1.permute((1,0)).reshape(1,-1)
         h_general_sheaf_index = torch.concat((hyperedge_index_0, hyperedge_index_1), 0)
-
-        if self.norm_type == 'block_norm':
-            # pass
-            h_general_sheaf_1 = h_general_sheaf.reshape(h_general_sheaf.shape[0], self.d, self.d)
-            num_nodes = hyperedge_index[0].max().item() + 1
-            num_edges = hyperedge_index[1].max().item() + 1
-
-            to_be_inv_nodes = torch.bmm(h_general_sheaf_1, h_general_sheaf_1.permute(0,2,1)) 
-            to_be_inv_nodes = scatter_add(to_be_inv_nodes, row, dim=0, dim_size=num_nodes)
-
-            to_be_inv_edges = torch.bmm(h_general_sheaf_1.permute(0,2,1), h_general_sheaf_1)
-            to_be_inv_edges = scatter_add(to_be_inv_edges, col, dim=0, dim_size=num_edges)
-
-
-            d_sqrt_inv_nodes = utils.batched_sym_matrix_pow(to_be_inv_nodes, -1.0) #n_nodes x d x d
-            d_sqrt_inv_edges = utils.batched_sym_matrix_pow(to_be_inv_edges, -1.0) #n_edges x d x d
-            
-
-            d_sqrt_inv_nodes_large = torch.index_select(d_sqrt_inv_nodes, dim=0, index=row)
-            d_sqrt_inv_edges_large = torch.index_select(d_sqrt_inv_edges, dim=0, index=col)
-
-
-            alpha_norm = torch.bmm(d_sqrt_inv_nodes_large, h_general_sheaf_1)
-            alpha_norm = torch.bmm(alpha_norm, d_sqrt_inv_edges_large)
-            h_general_sheaf = alpha_norm.clamp(min=-1, max=1)
-            h_general_sheaf = h_general_sheaf.reshape(h_general_sheaf.shape[0], self.d*self.d)
 
         #!!! Is this the correct reshape??? Please check!!
         h_general_sheaf_attributes = h_general_sheaf.reshape(-1)
@@ -489,7 +466,6 @@ class SheafBuilderLowRank(nn.Module):
         self.norm_type = args.sheaf_normtype
 
         self.rank = args.rank # r for the block matrices
-        self.noisy_low_rank = args.noisy_low_rank
 
         if self.prediction_type == 'transformer':
             transformer_head = args.sheaf_transformer_head
@@ -501,7 +477,7 @@ class SheafBuilderLowRank(nn.Module):
             self.transformer_lin_layer = MLP(
                     in_channels=2*self.MLP_hidden, 
                     hidden_channels=args.MLP_hidden,
-                    out_channels=2*self.d*self.rank,
+                    out_channels=2*self.d*self.rank+self.d,
                     num_layers=1,
                     dropout=0.0,
                     Normalization='ln',
@@ -511,7 +487,7 @@ class SheafBuilderLowRank(nn.Module):
             self.general_sheaf_lin = MLP(
                     in_channels=2*self.MLP_hidden, 
                     hidden_channels=args.MLP_hidden,
-                    out_channels=2*self.d*self.rank,
+                    out_channels=2*self.d*self.rank+self.d,
                     num_layers=1,
                     dropout=0.0,
                     Normalization='ln',
@@ -586,16 +562,15 @@ class SheafBuilderLowRank(nn.Module):
 
         # h_general_sheaf is nnz x (2*d*r)
         h_general_sheaf_A = h_general_sheaf[:, :self.d*self.rank].reshape(h_general_sheaf.shape[0], self.d, self.rank) #nnz x d x r
-        h_general_sheaf_B = h_general_sheaf[:, self.d*self.rank:].reshape(h_general_sheaf.shape[0], self.d, self.rank) #nnz x d x r
+        h_general_sheaf_B = h_general_sheaf[:, self.d*self.rank:2*self.d*self.rank].reshape(h_general_sheaf.shape[0], self.d, self.rank) #nnz x d x r
+        h_general_sheaf_C = h_general_sheaf[:, 2*self.d*self.rank:].reshape(h_general_sheaf.shape[0], self.d) #nnz x d x r
+        
         h_general_sheaf = torch.bmm(h_general_sheaf_A,h_general_sheaf_B.transpose(2,1)) #rank-r matrix
         
-        if self.noisy_low_rank:
-            # torch.manual_seed(0)
-            std = 0.1
-            noise = torch.randn(self.d).to(h_general_sheaf.device) * std
-            noise = noise.unsqueeze(0).repeat((h_general_sheaf.shape[0],1))
-            noise = torch.diag_embed(noise)
-            h_general_sheaf = h_general_sheaf + noise
+        #add elements on the diagonal
+        diag = torch.diag_embed(h_general_sheaf_C)
+        h_general_sheaf = h_general_sheaf + diag
+
         h_general_sheaf = h_general_sheaf.reshape(h_general_sheaf.shape[0], self.d*self.d)
         
         if debug:
@@ -1184,7 +1159,6 @@ class HGCNSheafBuilderLowRank(nn.Module):
         self.norm = args.AllSet_input_norm
 
         self.rank = args.rank
-        self.noisy_low_rank = args.noisy_low_rank
 
         if self.prediction_type == 'transformer':
             transformer_head = args.sheaf_transformer_head
@@ -1206,7 +1180,7 @@ class HGCNSheafBuilderLowRank(nn.Module):
             self.sheaf_lin = MLP(
                         in_channels=self.MLP_hidden + args.MLP_hidden, 
                         hidden_channels=args.MLP_hidden,
-                        out_channels=2*self.d*self.rank,
+                        out_channels=2*self.d*self.rank+self.d,
                         num_layers=1,
                         dropout=0.0,
                         Normalization='ln',
@@ -1215,7 +1189,7 @@ class HGCNSheafBuilderLowRank(nn.Module):
             self.sheaf_lin = MLP(
                         in_channels=2*self.MLP_hidden, 
                         hidden_channels=args.MLP_hidden,
-                        out_channels=2*self.d*self.rank,
+                        out_channels=2*self.d*self.rank+self.d,
                         num_layers=1,
                         dropout=0.0,
                         Normalization='ln',
@@ -1290,16 +1264,13 @@ class HGCNSheafBuilderLowRank(nn.Module):
 
         # h_general_sheaf is nnz x (2*d*r)
         h_general_sheaf_A = h_sheaf[:, :self.d*self.rank].reshape(h_sheaf.shape[0], self.d, self.rank) #nnz x d x r
-        h_general_sheaf_B = h_sheaf[:, self.d*self.rank:].reshape(h_sheaf.shape[0], self.d, self.rank) #nnz x d x r
+        h_general_sheaf_B = h_sheaf[:, self.d*self.rank:2*self.d*self.rank].reshape(h_sheaf.shape[0], self.d, self.rank) #nnz x d x r
+        h_general_sheaf_C = h_sheaf[:, 2*self.d*self.rank:].reshape(h_sheaf.shape[0], self.d) #nnz x d x r
+
         h_sheaf = torch.bmm(h_general_sheaf_A,h_general_sheaf_B.transpose(2,1)) #rank-r matrix
 
-        #not sure if adding randomness is ideal but let's try
-        if self.noisy_low_rank:
-            std = 0.1
-            noise = torch.randn(self.d).to(h_sheaf.device) * std
-            noise = noise.unsqueeze(0).repeat((h_sheaf.shape[0],1))
-            noise = torch.diag_embed(noise)
-            h_sheaf = h_sheaf + noise
+        diag = torch.diag_embed(h_general_sheaf_C)
+        h_sheaf = h_sheaf + diag
 
         h_sheaf = h_sheaf.reshape(h_sheaf.shape[0], self.d*self.d)
 
