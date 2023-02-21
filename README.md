@@ -13,7 +13,7 @@ For training EDNN-based sheaves: run_edgnn_sheaf.sh
 
 ## The main classes of the code used for sheaf-based models:
 
-`models.HyperSheafs(args, sheaf_type)` -- contains sheaf-based HCHA model  
+`models.HyperSheafs(args, sheaf_type)` -- contains sheaf-based HCHA model  + Diffusions
 
 `models.SheafHyperGCN(V, num_features, num_layers, num_classses, args, sheaf_type)` -- contains sheaf-based HGCN model  
 
@@ -36,7 +36,7 @@ model = HyperSheafs(args, 'DiagSheafs')
 
 
 ## Hyperparameters to tune:
-🔆 **—method:** DiagSheafs, OrthoSheafs, GeneralSheafs, SheafHyperGCNDiag, SheafHyperGCNOrtho, SheafHyperGCNGeneral, SheafEquivSetGNN_Diag, SheafEquivSetGNN_Ortho, SheafEquivSetGNN_General           # vary the constrans on the dxd block on top of HCHA, HGCN or EquivSetGNN 
+🔆 **—method:** DiagSheafsDiffusion, OrthoSheafsDiffusion, GeneralSheafsDiffusion, LowRankSheafsDiffusion, DiagSheafs, OrthoSheafs, GeneralSheafs, SheafHyperGCNDiag, SheafHyperGCNOrtho, SheafHyperGCNGeneral, SheafEquivSetGNN_Diag, SheafEquivSetGNN_Ortho, SheafEquivSetGNN_General           # vary the constrans on the dxd block on top of HCHA, HGCN or EquivSetGNN 
 
 **—heads:** int (usually 1-6)          # for the sheaf methods this confusingly refers to the dim of the stalk
 
