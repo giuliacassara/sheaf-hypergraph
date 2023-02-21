@@ -26,6 +26,7 @@ from torch_geometric.nn.inits import glorot, zeros
 from torch_geometric.typing import Adj, Size, OptTensor
 from typing import Optional
 import pdb
+import time
 
 import utils
 
@@ -755,7 +756,7 @@ class HypergraphGeneralSheafConv(MessagePassing):
 
     def normalise(self, h_general_sheaf, hyperedge_index, norm_type, num_nodes, num_edges):
         #this is just for block and sym_block normalisation
-        
+
         #index correspond to the small matrix
         row_small = hyperedge_index[0].view(-1,self.d,self.d)[:,0,0] // self.d
         col_small = hyperedge_index[1].view(-1,self.d,self.d)[:,0,0] // self.d
@@ -952,6 +953,427 @@ class MLP(nn.Module):
         x = self.lins[-1](x)
         return x
 
+
+
+# siliar to HCHA but with the correct diagonal entry
+# to align with the regularisation term in theory
+class HyperDiffusionDiagSheafConv(MessagePassing):
+    r"""
+    
+    """
+    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', 
+                left_proj=None, norm=None, residual = False,
+                 **kwargs):
+        kwargs.setdefault('aggr', 'add')
+        super().__init__(flow='source_to_target', node_dim=0, **kwargs)
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.d = d
+        self.norm_type = norm_type
+        self.left_proj = left_proj
+        self.norm = norm
+        self.residual = residual
+
+        if self.left_proj:
+            self.lin_left_proj = MLP(in_channels=d, 
+                        hidden_channels=d,
+                        out_channels=d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+                        
+           
+
+        self.lin = MLP(in_channels=in_channels, 
+                        hidden_channels=out_channels,
+                        out_channels=out_channels,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+                        
+        
+        if bias:
+            self.bias = Parameter(torch.Tensor(out_channels))
+        else:
+            self.register_parameter('bias', None)
+
+        self.device = device
+
+        self.I_mask = None
+        self.Id = None
+
+        self.reset_parameters()
+
+    #to allow multiple runs reset all parameters used
+    def reset_parameters(self):
+        if self.left_proj:
+            self.lin_left_proj.reset_parameters()
+        self.lin.reset_parameters()
+
+        zeros(self.bias)
+
+    def forward(self, x: Tensor, hyperedge_index: Tensor,
+                alpha, 
+                num_nodes,
+                num_edges) -> Tensor:
+        r"""
+        Args:
+            x (Tensor): Node feature matrix {Nd x F}`.
+            hyperedge_index (LongTensor): The hyperedge indices, *i.e.*
+                the sparse incidence matrix Nd x Md} from nodes to edges.
+            alpha (Tensor, optional): restriction maps
+        """ 
+        if self.left_proj:
+            x = x.t().reshape(-1, self.d)
+            x = self.lin_left_proj(x)
+            x = x.reshape(-1,num_nodes * self.d).t()
+        x = self.lin(x)
+        data_x = x
+
+        if self.I_mask is None: #prepare these in advance
+            I_block = torch.block_diag(*[torch.ones((self.d, self.d)) for i in range(num_nodes)]).to(self.device)
+            self.I_mask = torch.ones((num_nodes*self.d, num_nodes*self.d)).to(self.device) - 2*I_block
+            self.Id = utils.sparse_diagonal(torch.ones(num_nodes*self.d), shape = (num_nodes*self.d, num_nodes * self.d)).to(self.device)
+
+        #depending on norm_type D^-1 or D^-1/2
+        D_inv, B_inv = normalisation_matrices(x, hyperedge_index, alpha, num_nodes, num_edges, self.d, self.norm_type)
+
+
+        if self.norm_type in ['sym_degree_norm', 'sym_block_norm']:
+            # compute D^(-1/2) @ X
+            x = D_inv.unsqueeze(-1) * x
+
+        H = torch.sparse.FloatTensor(hyperedge_index, alpha, size=(num_nodes*self.d, num_edges*self.d))
+        H_t = torch.sparse.FloatTensor(hyperedge_index.flip([0]), alpha, size=(num_edges*self.d, num_nodes*self.d))
+
+        #this is because spdiags does not support gpu
+        B_inv =  utils.sparse_diagonal(B_inv, shape = (num_edges*self.d, num_edges*self.d))
+        D_inv = utils.sparse_diagonal(D_inv, shape = (num_nodes*self.d, num_nodes*self.d))
+
+        minus_L = torch.sparse.mm(B_inv, H_t)
+        minus_L = torch.sparse.mm(H, minus_L)
+        minus_L = torch.sparse.mm(D_inv, minus_L)
+
+        minus_L = minus_L * self.I_mask
+        minus_L = self.Id + minus_L
+        out = torch.sparse.mm(minus_L, x)
+
+        if self.bias is not None:
+            out = out + self.bias
+        if self.residual:
+            out = out + data_x
+        return out
+
+# siliar to HCHA but with the correct diagonal entry
+# to align with the regularisation term in theory
+class HyperDiffusionOrthoSheafConv(MessagePassing):
+    r"""
+    
+    """
+    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', 
+                left_proj=None, norm=None, residual = False,
+                 **kwargs):
+        kwargs.setdefault('aggr', 'add')
+        super().__init__(flow='source_to_target', node_dim=0, **kwargs)
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.d = d
+        self.norm_type=norm_type
+        self.norm=norm
+
+        #for ortho matrix block <=> degree
+        if self.norm_type == 'block_norm':
+            self.norm_type = 'degree_norm'
+        elif self.norm_type == 'sym_block_norm':
+            self.norm_type = 'sym_degree_norm'
+        
+
+
+        self.left_proj = left_proj
+        self.residual = residual
+
+        if self.left_proj:
+            self.lin_left_proj = MLP(in_channels=d, 
+                        hidden_channels=d,
+                        out_channels=d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+        self.lin = MLP(in_channels=in_channels, 
+                        hidden_channels=d,
+                        out_channels=out_channels,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+        if bias:
+            self.bias = Parameter(torch.Tensor(out_channels))
+        else:
+            self.register_parameter('bias', None)
+
+        self.device = device
+
+        self.I_mask = None
+        self.Id = None
+        self.reset_parameters()
+
+    #to allow multiple runs reset all parameters used
+    def reset_parameters(self):
+        if self.left_proj:
+            self.lin_left_proj.reset_parameters()
+        self.lin.reset_parameters()
+        zeros(self.bias)
+
+
+    def forward(self, x: Tensor, hyperedge_index: Tensor,
+                alpha, 
+                num_nodes,
+                num_edges) -> Tensor:
+        r"""
+        Args:
+            x (Tensor): Node feature matrix {Nd x F}`.
+            hyperedge_index (LongTensor): The hyperedge indices, *i.e.*
+                the sparse incidence matrix Nd x Md} from nodes to edges.
+            alpha (Tensor, optional): restriction maps
+        """ 
+        if self.left_proj:
+            x = x.t().reshape(-1, self.d)
+            x = self.lin_left_proj(x)
+            x = x.reshape(-1,num_nodes * self.d).t()
+        x = self.lin(x)    
+        data_x = x
+
+        if self.I_mask is None: #prepare these in advance
+            I_block = torch.block_diag(*[torch.ones((self.d, self.d)) for i in range(num_nodes)]).to(self.device)
+            self.I_mask = torch.ones((num_nodes*self.d, num_nodes*self.d)).to(self.device) - 2*I_block
+            self.Id = utils.sparse_diagonal(torch.ones(num_nodes*self.d), shape = (num_nodes*self.d, num_nodes * self.d)).to(self.device)
+
+        D_inv, B_inv = normalisation_matrices(x, hyperedge_index, alpha, num_nodes, num_edges, self.d, norm_type=self.norm_type)
+
+        if self.norm_type in ['sym_degree_norm', 'sym_block_norm']:
+            # compute D^(-1/2) @ X
+            x = D_inv.unsqueeze(-1) * x
+
+        H = torch.sparse.FloatTensor(hyperedge_index, alpha, size=(num_nodes*self.d, num_edges*self.d))
+        H_t = torch.sparse.FloatTensor(hyperedge_index.flip([0]), alpha, size=(num_edges*self.d, num_nodes*self.d))
+
+        #these are still diagonal because of ortho
+        B_inv =  utils.sparse_diagonal(B_inv, shape = (num_edges*self.d, num_edges*self.d))
+        D_inv = utils.sparse_diagonal(D_inv, shape = (num_nodes*self.d, num_nodes*self.d))
+
+        minus_L = torch.sparse.mm(B_inv, H_t)
+        minus_L = torch.sparse.mm(H, minus_L)
+        minus_L = torch.sparse.mm(D_inv, minus_L)
+
+        minus_L = minus_L * self.I_mask
+        minus_L = self.Id + minus_L
+
+        out = torch.sparse.mm(minus_L, x)
+
+        if self.bias is not None:
+            out = out + self.bias
+
+        if self.residual:
+            out = out + data_x
+        return out
+
+
+
+class HyperDiffusionGeneralSheafConv(MessagePassing):
+    r"""
+    
+    """
+    def __init__(self, in_channels, out_channels, d, device, dropout=0, bias=True, norm_type='degree_norm', 
+                left_proj=None, norm=None, residual=False,
+                 **kwargs):
+        kwargs.setdefault('aggr', 'add')
+        super().__init__(flow='source_to_target', node_dim=0, **kwargs)
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.d = d
+        self.norm=norm
+
+        self.left_proj = left_proj
+        self.residual = residual
+
+        if self.left_proj:
+            self.lin_left_proj = MLP(in_channels=d, 
+                        hidden_channels=d,
+                        out_channels=d,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+
+        self.lin = MLP(in_channels=in_channels, 
+                        hidden_channels=d,
+                        out_channels=out_channels,
+                        num_layers=1,
+                        dropout=0.0,
+                        Normalization='ln',
+                        InputNorm=self.norm)
+        if bias:
+            self.bias = Parameter(torch.Tensor(out_channels))
+        else:
+            self.register_parameter('bias', None)
+
+        self.device = device
+
+        self.I_mask = None
+        self.Id = None
+
+        self.norm_type = norm_type
+
+        self.reset_parameters()
+
+    #to allow multiple runs reset all parameters used
+    def reset_parameters(self):
+        if self.left_proj:
+            self.lin_left_proj.reset_parameters()
+        self.lin.reset_parameters()
+        zeros(self.bias)
+
+    def normalise(self, h_general_sheaf, hyperedge_index, norm_type, num_nodes, num_edges):
+        #this is just for block and sym_block normalisation
+
+        #index correspond to the small matrix
+        row_small = hyperedge_index[0].view(-1,self.d,self.d)[:,0,0] // self.d
+        col_small = hyperedge_index[1].view(-1,self.d,self.d)[:,0,0] // self.d
+
+        h_general_sheaf_1 = h_general_sheaf.reshape(row_small.shape[0], self.d, self.d)
+
+        # 
+        to_be_inv_nodes = torch.bmm(h_general_sheaf_1, h_general_sheaf_1.permute(0,2,1)) 
+        to_be_inv_nodes = scatter_add(to_be_inv_nodes, row_small, dim=0, dim_size=num_nodes)
+
+        # 
+        to_be_inv_edges = torch.bmm(h_general_sheaf_1.permute(0,2,1), h_general_sheaf_1)
+        to_be_inv_edges = scatter_add(to_be_inv_edges, col_small, dim=0, dim_size=num_edges)
+
+        if norm_type in ['block_norm']:
+            d_inv_nodes = utils.batched_sym_matrix_pow(to_be_inv_nodes, -1.0) #n_nodes x d x d
+            d_inv_edges = utils.batched_sym_matrix_pow(to_be_inv_edges, -1.0) #n_edges x d x d
+
+            return d_inv_nodes, d_inv_edges
+
+        elif norm_type in ['sym_block_norm']:
+            d_sqrt_inv_nodes = utils.batched_sym_matrix_pow(to_be_inv_nodes, -0.5) #n_nodes x d x d
+            d_sqrt_inv_edges = utils.batched_sym_matrix_pow(to_be_inv_edges, -0.5) #n_edges x d x d
+
+            # alpha_norm = torch.bmm(d_sqrt_inv_nodes_large, h_general_sheaf_1)
+            # alpha_norm = torch.bmm(alpha_norm, d_sqrt_inv_edges_large)
+            # h_general_sheaf = alpha_norm.clamp(min=-1, max=1)
+            # h_general_sheaf = h_general_sheaf.reshape(h_general_sheaf.shape[0], self.d*self.d)
+            return d_sqrt_inv_nodes, d_sqrt_inv_edges
+
+        # ones_nodes_large = torch.ones((num_nodes,self.d, self.d)).to(h_general_sheaf.device)
+        # ones_edges_large = torch.ones((num_edges,self.d, self.d)).to(h_general_sheaf.device)
+        # return ones_nodes_large, ones_edges_large
+
+    def forward(self, x: Tensor, hyperedge_index: Tensor,
+                alpha, 
+                num_nodes,
+                num_edges) -> Tensor:
+        r"""
+        Args:
+            Args:
+            x (Tensor): Node feature matrix {Nd x F}`.
+            hyperedge_index (LongTensor): The hyperedge indices, *i.e.*
+                the sparse incidence matrix Nd x Md} from nodes to edges.
+            alpha (Tensor, optional): restriction maps
+        """ 
+        if self.left_proj:
+            x = x.t().reshape(-1, self.d)
+            x = self.lin_left_proj(x)
+            x = x.reshape(-1,num_nodes * self.d).t()
+
+        x = self.lin(x)
+        data_x = x
+
+        if self.I_mask is None: #prepare these in advance
+            I_block = torch.block_diag(*[torch.ones((self.d, self.d)) for i in range(num_nodes)]).to(self.device)
+            self.I_mask = torch.ones((num_nodes*self.d, num_nodes*self.d)).to(self.device) - 2*I_block
+            self.Id = utils.sparse_diagonal(torch.ones(num_nodes*self.d), shape = (num_nodes*self.d, num_nodes * self.d)).to(self.device)
+
+
+        if self.norm_type in ['block_norm', 'sym_block_norm']:
+            # NOTE: the normalisation is specific to general sheaf
+            D_inv, B_inv = self.normalise(alpha, hyperedge_index, self.norm_type, num_nodes, num_edges) # num_nodes x d x d
+            D_inv = torch.block_diag(*torch.unbind(D_inv)) # nd x nd
+            B_inv = torch.block_diag(*torch.unbind(B_inv)) # ed x ed
+            # D_inv = D_inv.clamp(-2,2)
+            # B_inv = B_inv.clamp(-2,2)
+
+        else:
+            D_inv, B_inv = normalisation_matrices(x, hyperedge_index, alpha, num_nodes, num_edges, self.d, norm_type=self.norm_type)
+        
+        # x: (num_nodes*d) x f
+        if self.norm_type  == 'sym_degree_norm':
+            # compute D^(-1/2) @ X
+            x = D_inv.unsqueeze(-1) * x
+        elif self.norm_type  == 'sym_degree_norm':
+            x = D_inv @ x
+
+        if self.norm_type in ['sym_degree_norm', 'degree_norm']:
+            H = torch.sparse.FloatTensor(hyperedge_index, alpha, size=(num_nodes*self.d, num_edges*self.d))
+            H_t = torch.sparse.FloatTensor(hyperedge_index.flip([0]), alpha, size=(num_edges*self.d, num_nodes*self.d))
+
+            #these are still diagonal because of ortho
+            B_inv =  utils.sparse_diagonal(B_inv, shape = (num_edges*self.d, num_edges*self.d))
+            D_inv = utils.sparse_diagonal(D_inv, shape = (num_nodes*self.d, num_nodes*self.d))
+
+            minus_L = torch.sparse.mm(B_inv, H_t)
+            minus_L = torch.sparse.mm(H, minus_L)
+            minus_L = torch.sparse.mm(D_inv, minus_L)
+
+            minus_L = minus_L * self.I_mask
+            minus_L = self.Id + minus_L
+
+            out = torch.sparse.mm(minus_L, x)
+
+
+            # out = self.propagate(hyperedge_index, x=x, norm=B_inv, alpha=alpha,
+            #                     size=(num_nodes*self.d, num_edges*self.d))
+            # out = self.propagate(hyperedge_index.flip([0]), x=out, norm=D_inv,
+            #                     alpha=alpha, size=(num_edges*self.d, num_nodes*self.d))
+        
+        elif self.norm_type in ['sym_block_norm', 'block_norm']:
+            H = torch.sparse.FloatTensor(hyperedge_index, alpha, size=(num_nodes*self.d, num_edges*self.d))
+            H_t = torch.sparse.FloatTensor(hyperedge_index.flip([0]), alpha, size=(num_edges*self.d, num_nodes*self.d))
+
+            minus_L = B_inv @ H_t.to_dense()
+            minus_L = H.to_dense() @ minus_L
+            minus_L = D_inv @ minus_L
+            minus_L = minus_L.to_sparse()
+
+            minus_L = minus_L * self.I_mask
+            minus_L = self.Id + minus_L
+
+            out = torch.sparse.mm(minus_L, x)
+
+        
+        if self.bias is not None:
+            out = out + self.bias
+
+        if self.residual:
+            out = out + data_x
+
+        return out
+
+
+    def message(self, x_j: Tensor, norm_i: Tensor, alpha: Tensor) -> Tensor:
+        F = self.out_channels
+        out = norm_i.view(-1, 1) * x_j.view(-1, F)
+        if alpha is not None:
+            out = alpha.view(-1, 1) * out
+
+        return out
 
 class HalfNLHconv(MessagePassing):
     def __init__(self,

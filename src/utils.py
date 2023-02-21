@@ -311,3 +311,10 @@ def batched_sym_matrix_pow(matrices: torch.Tensor, p: float) -> torch.Tensor:
         vals = vals.pow(p).where(good, torch.zeros((), device=matrices.device, dtype=matrices.dtype))
         matrix_power = (vecs * vals.unsqueeze(-2)) @ torch.transpose(vecs, -2, -1)
         return matrix_power
+
+def sparse_diagonal(diag, shape):
+    r,c = shape
+    assert r == c
+    indexes = torch.arange(r).to(diag.device)
+    indexes = torch.stack([indexes, indexes], dim=0)
+    return torch.sparse.FloatTensor(indexes, diag)

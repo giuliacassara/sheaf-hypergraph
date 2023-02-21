@@ -126,8 +126,9 @@ def parse_method(args, data):
     elif args.method == 'MLP':
         model = MLP_model(args)
 
-    elif args.method in ['DiagSheafs', 'OrthoSheafs', 'GeneralSheafs', 'LowRankSheafs']:
+    elif args.method in ['DiagSheafs', 'OrthoSheafs', 'GeneralSheafs', 'LowRankSheafs', 'DiagSheafsDiffusion', 'OrthoSheafsDiffusion', 'GeneralSheafsDiffusion', 'LowRankSheafsDiffusion']:
         model = HyperSheafs(args, args.method)
+
 
     # elif args.method == 'OrthoSheafs':
     #     model = OrthoSheafs(args)
@@ -468,7 +469,9 @@ if __name__ == '__main__':
         data = generate_norm_HNHN(H, data, args)
         data.edge_index[1] -= data.edge_index[1].min()
     
-    elif args.method in ['HCHA', 'HGNN', 'DiagSheafs','OrthoSheafs', 'GeneralSheafs', 'LowRankSheafs', 'EquivSetGNN', 'SheafEquivSetGNN_Diag', 'SheafEquivSetGNN_Ortho', 'SheafEquivSetGNN_General', 'SheafEquivSetGNN_LowRank']:
+    elif args.method in ['HCHA', 'HGNN', 'DiagSheafs','OrthoSheafs', 'GeneralSheafs', 'LowRankSheafs', 
+                            'EquivSetGNN', 'SheafEquivSetGNN_Diag', 'SheafEquivSetGNN_Ortho', 'SheafEquivSetGNN_General', 'SheafEquivSetGNN_LowRank',
+                            'DiagSheafsDiffusion', 'OrthoSheafsDiffusion', 'GeneralSheafsDiffusion', 'LowRankSheafsDiffusion']:
         data = ExtractV2E(data)
         if args.add_self_loop:
             data = Add_Self_Loops(data)

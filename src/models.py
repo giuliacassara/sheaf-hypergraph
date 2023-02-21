@@ -457,7 +457,9 @@ class HyperSheafs(nn.Module):
         
         if sheaf_type == 'DiagSheafs':
             ModelSheaf = SheafBuilderDiag
+            # ModelConv = HypergraphDiagSheafConv
             ModelConv = HypergraphDiagSheafConv
+
         elif sheaf_type == 'OrthoSheafs':
             ModelSheaf = SheafBuilderOrtho
             ModelConv = HypergraphOrthoSheafConv
@@ -467,6 +469,21 @@ class HyperSheafs(nn.Module):
         elif sheaf_type == 'LowRankSheafs':
             ModelSheaf = SheafBuilderLowRank
             ModelConv = HypergraphGeneralSheafConv
+
+        if sheaf_type == 'DiagSheafsDiffusion':
+            ModelSheaf = SheafBuilderDiag
+            # ModelConv = HypergraphDiagSheafConv
+            ModelConv = HyperDiffusionDiagSheafConv
+
+        elif sheaf_type == 'OrthoSheafsDiffusion':
+            ModelSheaf = SheafBuilderOrtho
+            ModelConv = HyperDiffusionOrthoSheafConv
+        elif sheaf_type == 'GeneralSheafsDiffusion':
+            ModelSheaf = SheafBuilderGeneral
+            ModelConv = HyperDiffusionGeneralSheafConv
+        elif sheaf_type == 'LowRankSheafsDiffusion':
+            ModelSheaf = SheafBuilderLowRank
+            ModelConv = HyperDiffusionGeneralSheafConv
         
 #         Note that add dropout to attention is default in the original paper
         self.convs = nn.ModuleList()

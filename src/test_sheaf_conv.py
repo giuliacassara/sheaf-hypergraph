@@ -25,8 +25,8 @@ def get_test_config():
         'dropout': 0.0,
         'num_features': 16,
         'num_classes': 32,
-        'heads': 4,
-        'sheaf_normtype': 'block_norm',
+        'heads': 2,
+        'sheaf_normtype': 'sym_block_norm',
         'sheaf_pred_block': 'MLP_var1',
         'sheaf_transformer_head': 8,#MLP_hidden needs to divide this
         'dynamic_sheaf': False,
@@ -173,6 +173,52 @@ def test_sheaf_conv(sheaf_type):
     # out = diag_sheaf_conv(x, h_sheaf_index, alpha=h_sheaf_attributes, num_nodes=num_nodes*d, num_edges=num_edges*d)
     # assert out.size() == (num_nodes*d, out_channels)
 
+
+def test_equivariance_sheaf_diffusion(method):
+    torch.random.manual_seed(0)
+    np.random.seed(0)
+
+    args = get_test_config()
+    in_channels = args['num_features']
+    out_channels = args['num_classes']
+    d = args['heads']
+    args = Namespace(**args)
+    print(args)
+
+
+    hyperedge_index = torch.tensor([[0, 0, 1, 1, 2, 3], [0, 1, 0, 1, 0, 1]])
+    num_nodes = hyperedge_index[0].max().item() + 1
+    num_edges = hyperedge_index[1].max().item() + 1
+    x = torch.randn((num_nodes, in_channels))
+
+    with torch.no_grad():
+        if method == 'diag':
+            diag_sheaf_model = HyperSheafs(args, "DiagSheafsDiffusion")
+        elif method == 'ortho':
+            diag_sheaf_model = HyperSheafs(args, "OrthoSheafsDiffusion")
+        elif method == 'general':
+            diag_sheaf_model = HyperSheafs(args, "GeneralSheafsDiffusion")
+        # diag_sheaf_conv = HypergraphDiagSheafConv(in_channels, out_channels, d=3, device=device)
+        data = Data(x=x, edge_index=hyperedge_index)
+
+        P = generate_permutation_matrices(size=num_nodes, amount=1)[0]
+        
+        perm_data = permute_hypergraph(data, P)
+
+        # this is just to test the sheaf prediction
+        # h_sheaf_index, h_sheaf_attributes = diag_sheaf_model.build_sheaf_incidence(x, hyperedge_attr, hyperedge_index, layer_idx=0, debug=False)
+
+        #this is to test the perm equiv of prediction, sheaf generation is inside anyway
+        out = diag_sheaf_model(data)
+        print(out.mean())
+        out = torch.FloatTensor(P.astype(np.float64) @ out.numpy().astype(np.float64))
+        perm_out = diag_sheaf_model(perm_data)
+        print(out.mean(), perm_out.mean())
+
+        assert(torch.allclose(out, perm_out, atol=1e-6))
+        print(f"model {method} is permutation equivariant")
+
+
 def test_equivariance_sheaf_diag():
     torch.random.manual_seed(0)
     np.random.seed(0)
@@ -204,6 +250,7 @@ def test_equivariance_sheaf_diag():
 
         #this is to test the perm equiv of prediction, sheaf generation is inside anyway
         out = diag_sheaf_model(data)
+        print(out.mean())
         out = torch.FloatTensor(P.astype(np.float64) @ out.numpy().astype(np.float64))
         perm_out = diag_sheaf_model(perm_data)
         print(out.mean(), perm_out.mean())
@@ -531,6 +578,9 @@ if __name__ == '__main__':
             test_equivariance_sheaf_low_rank()
 
     # These are tests to check the permuation equivariance of EDHNN-based sheaves
+    if sys.argv[1] == 'diffusion_equivariance' :
+        #sys.argv[2] in ['general', 'diag', 'ortho', 'low_rank']
+        test_equivariance_sheaf_diffusion(sys.argv[2])
 
     if sys.argv[1] == 'EDHDD_equivariance' :
         #sys.argv[2] in ['general', 'diag', 'ortho', 'low_rank']
