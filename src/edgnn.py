@@ -24,7 +24,7 @@ from sheaf_builder import SheafBuilderDiag, SheafBuilderOrtho, SheafBuilderGener
 class EquivSetConv(nn.Module):
     def __init__(self, in_features, out_features, mlp1_layers=1, mlp2_layers=1,
         mlp3_layers=1, aggr='add', alpha=0.5, dropout=0., normalization='None', input_norm=False):
-        super(EquivSetConv).__init__()
+        super(EquivSetConv, self).__init__()
 
         if mlp1_layers > 0:
             self.W1 = MLP(in_features, out_features, out_features, mlp1_layers,
@@ -56,7 +56,6 @@ class EquivSetConv(nn.Module):
             self.W.reset_parameters()
 
     def forward(self, X, vertex, edges, X0, alpha):
-        pdb.set_trace()
         N = X.shape[-2]
 
         Xve = self.W1(X)[..., vertex, :] # [nnz, C]
@@ -157,7 +156,7 @@ class EquivSetGNN(nn.Module):
             V (torch.long): V is the row index for the sparse incident matrix H, |V| x |E|
             E (torch.long): E is the col index for the sparse incident matrix H, |V| x |E|
         """
-        super().__init__()
+        super(EquivSetGNN, self).__init__()
         nhid = args.MLP_hidden
         act = {'Id': nn.Identity(), 'relu': nn.ReLU(), 'prelu':nn.PReLU()}
         self.act = act[args.activation]
