@@ -26,7 +26,7 @@ def get_test_config():
         'num_features': 16,
         'num_classes': 32,
         'heads': 2,
-        'sheaf_normtype': 'sym_block_norm',
+        'sheaf_normtype': 'sym_degree_norm',
         'sheaf_pred_block': 'MLP_var1',
         'sheaf_transformer_head': 8,#MLP_hidden needs to divide this
         'dynamic_sheaf': False,

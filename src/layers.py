@@ -1033,11 +1033,6 @@ class HyperDiffusionDiagSheafConv(MessagePassing):
         x = self.lin(x)
         data_x = x
 
-        if self.I_mask is None: #prepare these in advance
-            I_block = torch.block_diag(*[torch.ones((self.d, self.d)) for i in range(num_nodes)]).to(self.device)
-            self.I_mask = torch.ones((num_nodes*self.d, num_nodes*self.d)).to(self.device) - 2*I_block
-            self.Id = utils.sparse_diagonal(torch.ones(num_nodes*self.d), shape = (num_nodes*self.d, num_nodes * self.d)).to(self.device)
-
         #depending on norm_type D^-1 or D^-1/2
         D_inv, B_inv = normalisation_matrices(x, hyperedge_index, alpha, num_nodes, num_edges, self.d, self.norm_type)
 
@@ -1057,7 +1052,18 @@ class HyperDiffusionDiagSheafConv(MessagePassing):
         minus_L = torch.sparse.mm(H, minus_L)
         minus_L = torch.sparse.mm(D_inv, minus_L)
 
-        minus_L = minus_L * self.I_mask
+        #negate the diagonal blocks and add eye matrix
+        if self.I_mask is None: #prepare these in advance
+            I_mask_indices = torch.stack([torch.arange(num_nodes), torch.arange(num_nodes)], dim=0)
+            I_mask_indices = utils.generate_indices_general(I_mask_indices, self.d)
+            I_mask_values = torch.ones((I_mask_indices.shape[1]))
+            self.I_mask = torch.sparse_coo_tensor(I_mask_indices, I_mask_values).to(self.device)
+            self.Id = utils.sparse_diagonal(torch.ones(num_nodes*self.d), shape = (num_nodes*self.d, num_nodes * self.d)).to(self.device)
+
+        #this help us changing the sign of the elements in the block diagonal
+        #with an efficient lower=memory mask 
+        minus_L = torch.sparse_coo_tensor(minus_L.indices(), minus_L.values(), minus_L.size())
+        minus_L = minus_L - 2 * minus_L.mul(self.I_mask)
         minus_L = self.Id + minus_L
         out = torch.sparse.mm(minus_L, x)
 
@@ -1150,9 +1156,12 @@ class HyperDiffusionOrthoSheafConv(MessagePassing):
 
         if self.I_mask is None: #prepare these in advance
             I_block = torch.block_diag(*[torch.ones((self.d, self.d)) for i in range(num_nodes)]).to(self.device)
-            self.I_mask = torch.ones((num_nodes*self.d, num_nodes*self.d)).to(self.device) - 2*I_block
+            I_mask_indices = torch.stack([torch.arange(num_nodes), torch.arange(num_nodes)], dim=0)
+            I_mask_indices = utils.generate_indices_general(I_mask_indices, self.d)
+            I_mask_values = -1 * torch.ones((I_mask_indices.shape[1]))
+            self.I_mask = torch.sparse_coo_tensor(I_mask_indices, I_mask_values).to(self.device)
             self.Id = utils.sparse_diagonal(torch.ones(num_nodes*self.d), shape = (num_nodes*self.d, num_nodes * self.d)).to(self.device)
-
+        
         D_inv, B_inv = normalisation_matrices(x, hyperedge_index, alpha, num_nodes, num_edges, self.d, norm_type=self.norm_type)
 
         if self.norm_type in ['sym_degree_norm', 'sym_block_norm']:
@@ -1170,7 +1179,8 @@ class HyperDiffusionOrthoSheafConv(MessagePassing):
         minus_L = torch.sparse.mm(H, minus_L)
         minus_L = torch.sparse.mm(D_inv, minus_L)
 
-        minus_L = minus_L * self.I_mask
+        minus_L = torch.sparse_coo_tensor(minus_L.indices(), minus_L.values(), minus_L.size())
+        minus_L = minus_L - 2 * minus_L.mul(self.I_mask)
         minus_L = self.Id + minus_L
 
         out = torch.sparse.mm(minus_L, x)
@@ -1298,15 +1308,29 @@ class HyperDiffusionGeneralSheafConv(MessagePassing):
 
         if self.I_mask is None: #prepare these in advance
             I_block = torch.block_diag(*[torch.ones((self.d, self.d)) for i in range(num_nodes)]).to(self.device)
-            self.I_mask = torch.ones((num_nodes*self.d, num_nodes*self.d)).to(self.device) - 2*I_block
+            I_mask_indices = torch.stack([torch.arange(num_nodes), torch.arange(num_nodes)], dim=0)
+            I_mask_indices = utils.generate_indices_general(I_mask_indices, self.d)
+            I_mask_values = -1 * torch.ones((I_mask_indices.shape[1]))
+            self.I_mask = torch.sparse_coo_tensor(I_mask_indices, I_mask_values).to(self.device)
             self.Id = utils.sparse_diagonal(torch.ones(num_nodes*self.d), shape = (num_nodes*self.d, num_nodes * self.d)).to(self.device)
-
 
         if self.norm_type in ['block_norm', 'sym_block_norm']:
             # NOTE: the normalisation is specific to general sheaf
             D_inv, B_inv = self.normalise(alpha, hyperedge_index, self.norm_type, num_nodes, num_edges) # num_nodes x d x d
-            D_inv = torch.block_diag(*torch.unbind(D_inv)) # nd x nd
-            B_inv = torch.block_diag(*torch.unbind(B_inv)) # ed x ed
+            diag_indices_D = torch.stack([torch.arange(num_nodes), torch.arange(num_nodes)], dim=0)
+            D_inv_indices = utils.generate_indices_general(diag_indices_D, self.d).to(x.device)
+            D_inv_flat = D_inv.reshape(-1)
+
+            diag_indices_B = torch.stack([torch.arange(num_edges), torch.arange(num_edges)], dim=0)
+            B_inv_indices = utils.generate_indices_general(diag_indices_B, self.d).to(x.device)
+            B_inv_flat = B_inv.reshape(-1)
+
+            D_inv = torch.sparse.FloatTensor(D_inv_indices, D_inv_flat)
+            B_inv = torch.sparse.FloatTensor(B_inv_indices, B_inv_flat)
+
+        
+            # D_inv = torch.block_diag(*torch.unbind(D_inv)) # nd x nd
+            # B_inv = torch.block_diag(*torch.unbind(B_inv)) # ed x ed
             # D_inv = D_inv.clamp(-2,2)
             # B_inv = B_inv.clamp(-2,2)
 
@@ -1332,7 +1356,8 @@ class HyperDiffusionGeneralSheafConv(MessagePassing):
             minus_L = torch.sparse.mm(H, minus_L)
             minus_L = torch.sparse.mm(D_inv, minus_L)
 
-            minus_L = minus_L * self.I_mask
+            minus_L = torch.sparse_coo_tensor(minus_L.indices(), minus_L.values(), minus_L.size())
+            minus_L = minus_L - 2 * minus_L.mul(self.I_mask)
             minus_L = self.Id + minus_L
 
             out = torch.sparse.mm(minus_L, x)
@@ -1347,10 +1372,14 @@ class HyperDiffusionGeneralSheafConv(MessagePassing):
             H = torch.sparse.FloatTensor(hyperedge_index, alpha, size=(num_nodes*self.d, num_edges*self.d))
             H_t = torch.sparse.FloatTensor(hyperedge_index.flip([0]), alpha, size=(num_edges*self.d, num_nodes*self.d))
 
-            minus_L = B_inv @ H_t.to_dense()
-            minus_L = H.to_dense() @ minus_L
-            minus_L = D_inv @ minus_L
-            minus_L = minus_L.to_sparse()
+            # minus_L = B_inv @ H_t.to_dense()
+            # minus_L = H.to_dense() @ minus_L
+            # minus_L = D_inv @ minus_L
+            # minus_L = minus_L.to_sparse()
+
+            minus_L = torch.sparse.mm(B_inv, H_t)
+            minus_L = torch.sparse.mm(H, minus_L)
+            minus_L = torch.sparse.mm(D_inv, minus_L)
 
             minus_L = minus_L * self.I_mask
             minus_L = self.Id + minus_L

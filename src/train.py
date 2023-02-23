@@ -246,7 +246,10 @@ def eval_acc(y_true, y_pred, name):
 #     for i in range(y_true.shape[1]):
     is_labeled = y_true == y_true
     correct = y_true[is_labeled] == y_pred[is_labeled]
-    acc_list.append(float(np.sum(correct))/len(correct))
+    if len(correct) == 0:
+        acc_list.append(0.0)
+    else:    
+        acc_list.append(float(np.sum(correct))/len(correct))
     
     return sum(acc_list)/len(acc_list)
 
@@ -628,17 +631,23 @@ if __name__ == '__main__':
 
 
         # pdb.set_trace()
+        best_accuracy = -100
         for epoch in range(len(train_accs_mean)):
+            best_accuracy = max(best_accuracy, valid_accs_mean[epoch])
             log_corpus = {
                 f'train_accs_mean': train_accs_mean[epoch],
                 f'val_accs_mean': valid_accs_mean[epoch],
                 f'test_accs_mean': test_accs_mean[epoch],
+                f'best_accs_mean': best_accuracy,
+
                 f'train_acc_std': train_accs_std[epoch],
                 f'test_acc_std': valid_accs_std[epoch],
                 f'val_acc_std': test_accs_std[epoch],
+
                 f'train_loss_mean': train_loss_mean[epoch],
                 f'val_loss_mean': valid_loss_mean[epoch],
                 f'test_loss_mean': test_loss_mean[epoch],
+
                 f'train_loss_std': train_loss_std[epoch],
                 f'test_loss_std': valid_loss_std[epoch],
                 f'val_loss_std': test_loss_std[epoch],

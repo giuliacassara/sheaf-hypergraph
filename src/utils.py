@@ -318,3 +318,18 @@ def sparse_diagonal(diag, shape):
     indexes = torch.arange(r).to(diag.device)
     indexes = torch.stack([indexes, indexes], dim=0)
     return torch.sparse.FloatTensor(indexes, diag)
+
+
+def generate_indices_general(indexes, d):
+    d_range = torch.arange(d)
+    d_range_edges = d_range.repeat(d).view(-1,1) #0,1..d,0,1..d..   d*d elems
+    d_range_nodes = d_range.repeat_interleave(d).view(-1,1) #0,0..0,1,1..1..d,d..d  d*d elems
+    indexes = indexes.unsqueeze(1) 
+
+    large_indexes_0 = d * indexes[0] + d_range_nodes
+    large_indexes_0 = large_indexes_0.permute((1,0)).reshape(1,-1)
+    large_indexes_1 = d * indexes[1] + d_range_edges
+    large_indexes_1 = large_indexes_1.permute((1,0)).reshape(1,-1)
+    large_indexes = torch.concat((large_indexes_0, large_indexes_1), 0)
+
+    return large_indexes

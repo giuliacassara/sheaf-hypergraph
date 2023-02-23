@@ -21,7 +21,7 @@ class SheafBuilderDiag(nn.Module):
         self.d = args.heads
         self.MLP_hidden = args.MLP_hidden
         self.norm = args.AllSet_input_norm
-
+        self.dropout = args.dropout
         if self.prediction_type == 'transformer':
             transformer_head = args.sheaf_transformer_head
             self.transformer_layer=torch_geometric.nn.TransformerConv(
@@ -160,6 +160,7 @@ class SheafBuilderGeneral(nn.Module):
         self.MLP_hidden = args.MLP_hidden
         self.norm = args.AllSet_input_norm
         self.norm_type = args.sheaf_normtype
+        self.dropout = args.dropout
 
         if self.prediction_type == 'transformer':
             transformer_head = args.sheaf_transformer_head
@@ -307,6 +308,7 @@ class SheafBuilderOrtho(nn.Module):
         self.d = args.heads
         self.MLP_hidden = args.MLP_hidden
         self.norm = args.AllSet_input_norm
+        self.dropout = args.dropout
 
         self.orth_transform = Orthogonal(d=self.d, orthogonal_map='householder') #method applied to transform params into ortho dxd matrix
 
@@ -466,6 +468,7 @@ class SheafBuilderLowRank(nn.Module):
         self.norm_type = args.sheaf_normtype
 
         self.rank = args.rank # r for the block matrices
+        self.dropout = args.dropout
 
         if self.prediction_type == 'transformer':
             transformer_head = args.sheaf_transformer_head
@@ -783,6 +786,7 @@ class HGCNSheafBuilderDiag(nn.Module):
         self.d = args.heads
         self.MLP_hidden = hidden_dim
         self.norm = args.AllSet_input_norm
+        self.dropout = args.dropout
 
         if self.prediction_type == 'transformer':
             transformer_head = args.sheaf_transformer_head
@@ -908,7 +912,7 @@ class HGCNSheafBuilderGeneral(nn.Module):
         self.d = args.heads
         self.MLP_hidden = hidden_dim
         self.norm = args.AllSet_input_norm
-
+        self.dropout = args.dropout
         
         if self.prediction_type == 'transformer':
             transformer_head = args.sheaf_transformer_head
@@ -1033,7 +1037,8 @@ class HGCNSheafBuilderOrtho(nn.Module):
         self.norm = args.AllSet_input_norm
 
         self.orth_transform = Orthogonal(d=self.d, orthogonal_map='householder') #method applied to transform params into ortho dxd matrix
-        
+        self.dropout = args.dropout
+
         if self.prediction_type == 'transformer':
             transformer_head = args.sheaf_transformer_head
             self.transformer_layer=torch_geometric.nn.TransformerConv(
@@ -1159,7 +1164,8 @@ class HGCNSheafBuilderLowRank(nn.Module):
         self.norm = args.AllSet_input_norm
 
         self.rank = args.rank
-
+        self.dropout = args.dropout
+        
         if self.prediction_type == 'transformer':
             transformer_head = args.sheaf_transformer_head
             self.transformer_layer=torch_geometric.nn.TransformerConv(
