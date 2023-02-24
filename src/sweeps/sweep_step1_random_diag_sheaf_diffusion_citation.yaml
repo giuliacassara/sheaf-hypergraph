@@ -1,0 +1,105 @@
+method: random
+metric:
+  goal: maximize
+  name: best_accs_mean
+parameters:
+  tag: 
+    distribution: constant
+    value: hyperparameter_tuning
+  #to speedup a  bit
+  runs:
+    distribution: constant
+    value: 10
+  method:
+    distribution: constant
+    value: DiagSheafsDiffusion
+  dname:
+    distribution: constant
+    value: cora
+
+  #will be change in GRID
+  sheaf_normtype:
+    distribution: constant
+    value: degree_norm
+  #will be change in GRID
+  sheaf_left_proj:
+    distribution: constant
+    value: False
+  #will be change in GRID
+  dynamic_sheaf:
+    distribution: constant
+    value: False
+  #will be change in GRID
+  sheaf_special_head:
+    distribution: constant
+    values: False
+  #will be change in GRID
+  sheaf_pred_block:
+    distribution: constant
+    value: MLP_var1
+
+  #will be change in GRID
+  heads:
+    distribution: categorical
+    values: [1,,4, 8]
+  #will be change in GRID
+  sheaf_transformer_head:
+    distribution: constant
+    value: 4
+  #will be change in GRID
+  sheaf_act:
+    distribution: constant
+    value: sigmoid
+  #will be change in GRID
+  sheaf_dropout:
+    distribution: constant
+    value: False
+  #will be change in GRID
+  AllSet_input_norm:
+    distribution: constant
+    value: True
+  # This is just for LowRank
+  # rank:
+  #   distribution: categorical
+    # values: [True, False]
+  All_num_layers:
+    distribution: categorical
+    values: [1,2,3,4,8]
+  
+  MLP_hidden:
+    values: [16, 32, 64, 128, 256, 512]
+  # This is just for EDNN
+  # MLP_num_layers:
+  #   distribution: int_uniform
+  #   max: 4
+  #   min: 1
+  # This is just for EDNN
+  # MLP2_num_layers:
+  #   distribution: int_uniform
+  #   max: 4
+  #   min: 1
+  dropout:
+    distribution: categorical
+    values: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+  #change this to 300 when move to grid-search
+  epochs:
+    distribution: constant
+    value: 100
+  #will be change in GRID
+  init_hedge:
+    distribution: constant
+    value: avg
+  lr:
+    distribution: categorical
+    values: [0.1, 0.01, 0.001]
+  wd:
+    distribution: categorical
+    values: [0, 0.00001]
+  # This is just for EDNN
+  # Classifier_hidden:
+  #   distribution: categorical
+  #   values: [32, 64, 128]
+  # Classifier_num_layers:
+  #   distribution: categorical
+  #   values: [1,2]
+program: train.py

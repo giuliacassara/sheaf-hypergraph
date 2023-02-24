@@ -265,6 +265,7 @@ def count_parameters(model):
 """
 
 if __name__ == '__main__':
+    start_time = time.time()
     def str2bool(v):
         if v.lower() in ('yes', 'true', 't', 'y', '1'):
             return True
@@ -280,7 +281,7 @@ if __name__ == '__main__':
     parser.add_argument('--method', default='AllSetTransformer')
     parser.add_argument('--epochs', default=500, type=int)
     # Number of runs for each split (test fix, only shuffle train/val)
-    parser.add_argument('--runs', default=20, type=int)
+    parser.add_argument('--runs', default=10, type=int)
     parser.add_argument('--cuda', default=0, choices=[-1, 0, 1], type=int)
     parser.add_argument('--dropout', default=0.5, type=float)
     parser.add_argument('--lr', default=0.001, type=float)
@@ -385,7 +386,7 @@ if __name__ == '__main__':
                         'coauthor_cora', 'coauthor_dblp',
                         'yelp', 'amazon-reviews', 'walmart-trips', 'house-committees',
                         'walmart-trips-100', 'house-committees-100',
-                        'cora', 'citeseer', 'pubmed']
+                        'cora', 'citeseer', 'pubmed', 'congress-bills', 'senate-committees']
         
     # if args.dname in existing_dataset:
     #     dname = args.dname
@@ -406,7 +407,7 @@ if __name__ == '__main__':
     #         data.num_hyperedges = torch.tensor(
     #             [data.edge_index[0].max()-data.n_x[0]+1])
 
-    synthetic_list = ['amazon-reviews', 'walmart-trips', 'house-committees', 'walmart-trips-100', 'house-committees-100']
+    synthetic_list = ['amazon-reviews', 'walmart-trips', 'house-committees', 'walmart-trips-100', 'house-committees-100', 'congress-bills', 'senate-committees']
     
     if args.dname in existing_dataset:
         dname = args.dname
@@ -675,5 +676,10 @@ if __name__ == '__main__':
         f.write(str(args))
         f.write('\n')
 
+    end_time = time.time()
+    total_time = end_time - start_time
+    print(f"TIME FOR ONE EXPERIMENT WITH {args.runs} RUNS: \\ Minutes: {total_time//60}, seconds {total_time%60}")
     print('All done! Exit python code')
     quit()
+    
+

@@ -45,7 +45,7 @@ class dataset_Hypergraph(InMemoryDataset):
                             'yelp', 'amazon-reviews', 'walmart-trips', 'house-committees',
                             'senate-committees', 'contact-high-school' , 'contact-primary-school',
                             'walmart-trips-100', 'house-committees-100',
-                            'cora', 'citeseer', 'pubmed']
+                            'cora', 'citeseer', 'pubmed', 'congress-bills']
         if name not in existing_dataset:
             raise ValueError(f'name of hypergraph dataset must be one of: {existing_dataset}')
         else:
@@ -125,7 +125,7 @@ class dataset_Hypergraph(InMemoryDataset):
                             )
 
                 #iulia readded
-                elif self.name in ['amazon-reviews', 'walmart-trips', 'house-committees']:
+                elif self.name in ['amazon-reviews', 'walmart-trips', 'house-committees', 'senate-committees', 'congress-bills']:
                     if self.feature_noise is None:
                         raise ValueError(f'for cornell datasets, feature noise cannot be {self.feature_noise}')
                     tmp_data = load_cornell_dataset(path = self.p2raw,

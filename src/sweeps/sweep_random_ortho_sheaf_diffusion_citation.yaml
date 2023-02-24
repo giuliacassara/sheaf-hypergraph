@@ -1,0 +1,100 @@
+method: random
+metric:
+  goal: maximize
+  name: val_accs_mean
+parameters:
+  tag: 
+    distribution: constant
+    value: hyperparameter_tuning
+  method:
+    distribution: constant
+    value: OrthoSheafsDiffusion
+  dname:
+    distribution: constant
+    value: cora
+
+  sheaf_normtype:
+    distribution: categorical
+    values:
+      - degree_norm
+      - block_norm
+      - sym_degree_norm
+      - sym_block_norm
+  sheaf_left_proj:
+    distribution: categorical
+    values: [True, False]
+  dynamic_sheaf:
+    distribution: categorical
+    values: [True, False]
+  sheaf_special_head:
+    distribution: categorical
+    values: [True, False]
+  sheaf_pred_block:
+    distribution: categorical
+    values:
+      - MLP_var1
+      - MLP_var2
+      - MLP_var3
+      - transformer
+      - cp_decomp
+  heads:
+    distribution: categorical
+    values: [1,2,3,4,5,6,7,8]
+  sheaf_transformer_head:
+    distribution: categorical
+    values: [1,4,8]
+  sheaf_act:
+    distribution: categorical
+    values: 
+      - sigmoid 
+      - tanh
+  sheaf_dropout:
+    distribution: categorical
+    values: [True, False]
+  AllSet_input_norm:
+    distribution: categorical
+    values: [True, False]
+  # This is just for LowRank
+  # rank:
+  #   distribution: categorical
+    values: [True, False]
+  All_num_layers:
+    distribution: categorical
+    values: [1,2,4,6,8]
+  MLP_hidden:
+    values: [16, 32, 64, 128, 256, 512]
+  # This is just for EDNN
+  # MLP_num_layers:
+  #   distribution: int_uniform
+  #   max: 4
+  #   min: 1
+  # This is just for EDNN
+  # MLP2_num_layers:
+  #   distribution: int_uniform
+  #   max: 4
+  #   min: 1
+  dropout:
+    distribution: categorical
+    values: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+  epochs:
+    distribution: constant
+    value: 100
+  init_hedge:
+    distribution: categorical
+    values:
+      - rand
+      - avg
+  lr:
+    distribution: categorical
+    values: [0.1, 0.01, 0.001]
+  wd:
+    distribution: categorical
+    values: [0, 0.00001]
+  # This is just for EDNN
+  # Classifier_hidden:
+  #   distribution: categorical
+  #   values: [32, 64, 128]
+  # Classifier_num_layers:
+  #   distribution: categorical
+  #   values: [1,2]
+program: train.py
