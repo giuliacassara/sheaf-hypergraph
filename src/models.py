@@ -672,7 +672,6 @@ class HCHA(nn.Module):
         x = data.x
         edge_index = data.edge_index
         num_nodes = data.edge_index[0].max().item() + 1
-
         num_edges = data.edge_index[1].max().item() + 1
         
         # hyperedge_attr = torch.randn((num_edges, self.num_features)).to(self.device)
@@ -681,7 +680,7 @@ class HCHA(nn.Module):
 
         for i, conv in enumerate(self.convs[:-1]):
             # print(i)
-            x = F.elu(conv(x, edge_index, hyperedge_attr = self.hyperedge_attr, residual=self.residual))
+            x = F.elu(conv(x, edge_index, hyperedge_attr = self.hyperedge_attr))
             x = F.dropout(x, p=self.dropout, training=self.training)
 #         x = F.dropout(x, p=self.dropout, training=self.training)
 

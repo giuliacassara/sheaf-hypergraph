@@ -386,7 +386,7 @@ if __name__ == '__main__':
                         'coauthor_cora', 'coauthor_dblp',
                         'yelp', 'amazon-reviews', 'walmart-trips', 'house-committees',
                         'walmart-trips-100', 'house-committees-100',
-                        'cora', 'citeseer', 'pubmed', 'congress-bills', 'senate-committees']
+                        'cora', 'citeseer', 'pubmed', 'congress-bills', 'senate-committees', 'senate-committees-100']
         
     # if args.dname in existing_dataset:
     #     dname = args.dname
@@ -407,7 +407,7 @@ if __name__ == '__main__':
     #         data.num_hyperedges = torch.tensor(
     #             [data.edge_index[0].max()-data.n_x[0]+1])
 
-    synthetic_list = ['amazon-reviews', 'walmart-trips', 'house-committees', 'walmart-trips-100', 'house-committees-100', 'congress-bills', 'senate-committees']
+    synthetic_list = ['amazon-reviews', 'walmart-trips', 'house-committees', 'walmart-trips-100', 'house-committees-100', 'congress-bills', 'senate-committees', 'senate-committees-100']
     
     if args.dname in existing_dataset:
         dname = args.dname

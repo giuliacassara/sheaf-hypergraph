@@ -1159,7 +1159,7 @@ class HyperDiffusionOrthoSheafConv(MessagePassing):
             I_mask_indices = torch.stack([torch.arange(num_nodes), torch.arange(num_nodes)], dim=0)
             I_mask_indices = utils.generate_indices_general(I_mask_indices, self.d)
             I_mask_values = -1 * torch.ones((I_mask_indices.shape[1]))
-            self.I_mask = torch.sparse_coo_tensor(I_mask_indices, I_mask_values).to(self.device)
+            self.I_mask = torch.sparse.FloatTensor(I_mask_indices, I_mask_values).to(self.device)
             self.Id = utils.sparse_diagonal(torch.ones(num_nodes*self.d), shape = (num_nodes*self.d, num_nodes * self.d)).to(self.device)
         
         D_inv, B_inv = normalisation_matrices(x, hyperedge_index, alpha, num_nodes, num_edges, self.d, norm_type=self.norm_type)
@@ -1179,8 +1179,7 @@ class HyperDiffusionOrthoSheafConv(MessagePassing):
         minus_L = torch.sparse.mm(H, minus_L)
         minus_L = torch.sparse.mm(D_inv, minus_L)
 
-        minus_L = torch.sparse_coo_tensor(minus_L.indices(), minus_L.values(), minus_L.size())
-        minus_L = minus_L - 2 * minus_L.mul(self.I_mask)
+        minus_L = minus_L * self.I_mask
         minus_L = self.Id + minus_L
 
         out = torch.sparse.mm(minus_L, x)
@@ -1311,7 +1310,7 @@ class HyperDiffusionGeneralSheafConv(MessagePassing):
             I_mask_indices = torch.stack([torch.arange(num_nodes), torch.arange(num_nodes)], dim=0)
             I_mask_indices = utils.generate_indices_general(I_mask_indices, self.d)
             I_mask_values = -1 * torch.ones((I_mask_indices.shape[1]))
-            self.I_mask = torch.sparse_coo_tensor(I_mask_indices, I_mask_values).to(self.device)
+            self.I_mask = torch.sparse.FloatTensor(I_mask_indices, I_mask_values).to(self.device)
             self.Id = utils.sparse_diagonal(torch.ones(num_nodes*self.d), shape = (num_nodes*self.d, num_nodes * self.d)).to(self.device)
 
         if self.norm_type in ['block_norm', 'sym_block_norm']:
@@ -1356,8 +1355,7 @@ class HyperDiffusionGeneralSheafConv(MessagePassing):
             minus_L = torch.sparse.mm(H, minus_L)
             minus_L = torch.sparse.mm(D_inv, minus_L)
 
-            minus_L = torch.sparse_coo_tensor(minus_L.indices(), minus_L.values(), minus_L.size())
-            minus_L = minus_L - 2 * minus_L.mul(self.I_mask)
+            minus_L = minus_L * self.I_mask
             minus_L = self.Id + minus_L
 
             out = torch.sparse.mm(minus_L, x)
