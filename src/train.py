@@ -431,7 +431,7 @@ if __name__ == '__main__':
         data = dataset.data
         args.num_features = dataset.num_features
         args.num_classes = dataset.num_classes
-        if args.dname in ['yelp', 'walmart-trips', 'house-committees', 'walmart-trips-100', 'house-committees-100']:
+        if args.dname in ['yelp', 'walmart-trips', 'house-committees', 'walmart-trips-100', 'house-committees-100', 'senate-committees', 'senate-committees-100', 'congress-bills']:
             #         Shift the y label to start with 0
             args.num_classes = len(data.y.unique())
             data.y = data.y - data.y.min()
