@@ -386,7 +386,7 @@ if __name__ == '__main__':
                         'coauthor_cora', 'coauthor_dblp',
                         'yelp', 'amazon-reviews', 'walmart-trips', 'house-committees',
                         'walmart-trips-100', 'house-committees-100',
-                        'cora', 'citeseer', 'pubmed', 'congress-bills', 'senate-committees', 'senate-committees-100']
+                        'cora', 'citeseer', 'pubmed', 'congress-bills', 'senate-committees', 'senate-committees-100', 'congress-bills-100']
         
     # if args.dname in existing_dataset:
     #     dname = args.dname
@@ -407,7 +407,7 @@ if __name__ == '__main__':
     #         data.num_hyperedges = torch.tensor(
     #             [data.edge_index[0].max()-data.n_x[0]+1])
 
-    synthetic_list = ['amazon-reviews', 'walmart-trips', 'house-committees', 'walmart-trips-100', 'house-committees-100', 'congress-bills', 'senate-committees', 'senate-committees-100']
+    synthetic_list = ['amazon-reviews', 'walmart-trips', 'house-committees', 'walmart-trips-100', 'house-committees-100', 'congress-bills', 'senate-committees', 'senate-committees-100', 'congress-bills-100']
     
     if args.dname in existing_dataset:
         dname = args.dname
@@ -431,7 +431,7 @@ if __name__ == '__main__':
         data = dataset.data
         args.num_features = dataset.num_features
         args.num_classes = dataset.num_classes
-        if args.dname in ['yelp', 'walmart-trips', 'house-committees', 'walmart-trips-100', 'house-committees-100', 'senate-committees', 'senate-committees-100', 'congress-bills']:
+        if args.dname in ['yelp', 'walmart-trips', 'house-committees', 'walmart-trips-100', 'house-committees-100', 'senate-committees', 'senate-committees-100', 'congress-bills', 'congress-bills-100']:
             #         Shift the y label to start with 0
             args.num_classes = len(data.y.unique())
             data.y = data.y - data.y.min()
@@ -441,7 +441,8 @@ if __name__ == '__main__':
             # note that we assume the he_id is consecutive.
             data.num_hyperedges = torch.tensor(
                 [data.edge_index[0].max()-data.n_x[0]+1])
-    
+        assert data.y.min().item() == 0
+        
     if args.method in ['AllSetTransformer', 'AllDeepSets']:
         data = ExtractV2E(data)
         if args.add_self_loop:
@@ -556,6 +557,7 @@ if __name__ == '__main__':
     #         if args.method == 'HNHN':
     #             scheduler.step()
     #         Evaluation part
+            
             result = evaluate(model, data, split_idx, eval_func)
             logger.add_result(run, result[:3])
     
@@ -630,8 +632,6 @@ if __name__ == '__main__':
         
 
 
-
-        # pdb.set_trace()
         best_accuracy = -100
         for epoch in range(len(train_accs_mean)):
             best_accuracy = max(best_accuracy, valid_accs_mean[epoch])

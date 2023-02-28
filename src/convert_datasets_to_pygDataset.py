@@ -45,7 +45,7 @@ class dataset_Hypergraph(InMemoryDataset):
                             'yelp', 'amazon-reviews', 'walmart-trips', 'house-committees',
                             'senate-committees', 'contact-high-school' , 'contact-primary-school',
                             'walmart-trips-100', 'house-committees-100', 'senate-committees-100',
-                            'cora', 'citeseer', 'pubmed', 'congress-bills']
+                            'cora', 'citeseer', 'pubmed', 'congress-bills', 'congress-bills-100']
         if name not in existing_dataset:
             raise ValueError(f'name of hypergraph dataset must be one of: {existing_dataset}')
         else:
@@ -132,7 +132,7 @@ class dataset_Hypergraph(InMemoryDataset):
                         dataset = self.name,
                         feature_noise = self.feature_noise,
                         train_percent = self._train_percent)
-                elif self.name in ['walmart-trips-100', 'house-committees-100', 'senate-committees-100']:
+                elif self.name in ['walmart-trips-100', 'house-committees-100', 'senate-committees-100', 'congress-bills-100']:
                     if self.feature_noise is None:
                         raise ValueError(f'for cornell datasets, feature noise cannot be {self.feature_noise}')
                     feature_dim = int(self.name.split('-')[-1])
